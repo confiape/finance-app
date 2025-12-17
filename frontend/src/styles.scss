@@ -1,0 +1,192 @@
+@use '@angular/material' as mat;
+
+@include mat.core();
+
+$primary-palette: (
+  50: #eef2ff,
+  100: #e0e7ff,
+  200: #c7d2fe,
+  300: #a5b4fc,
+  400: #818cf8,
+  500: #6366f1,
+  600: #4f46e5,
+  700: #4338ca,
+  800: #3730a3,
+  900: #312e81,
+  contrast: (
+    50: rgba(0, 0, 0, 0.87),
+    100: rgba(0, 0, 0, 0.87),
+    200: rgba(0, 0, 0, 0.87),
+    300: rgba(0, 0, 0, 0.87),
+    400: white,
+    500: white,
+    600: white,
+    700: white,
+    800: white,
+    900: white,
+  )
+);
+
+$finance-primary: mat.define-palette($primary-palette);
+$finance-accent: mat.define-palette(mat.$green-palette);
+$finance-warn: mat.define-palette(mat.$red-palette);
+
+$finance-theme: mat.define-light-theme((
+  color: (
+    primary: $finance-primary,
+    accent: $finance-accent,
+    warn: $finance-warn,
+  ),
+  typography: mat.define-typography-config(
+    $font-family: 'Inter, sans-serif',
+  ),
+));
+
+@include mat.all-component-themes($finance-theme);
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  font-family: 'Inter', sans-serif;
+  background-color: #f8fafc;
+  color: #1e293b;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 16px;
+}
+
+// Cards
+.card {
+  background: white;
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+// Typography
+.text-muted {
+  color: #64748b;
+}
+
+.text-success {
+  color: #22c55e;
+}
+
+.text-danger {
+  color: #ef4444;
+}
+
+// Layout helpers
+.flex {
+  display: flex;
+}
+
+.flex-col {
+  flex-direction: column;
+}
+
+.items-center {
+  align-items: center;
+}
+
+.justify-between {
+  justify-content: space-between;
+}
+
+.gap-2 {
+  gap: 8px;
+}
+
+.gap-4 {
+  gap: 16px;
+}
+
+.mb-2 {
+  margin-bottom: 8px;
+}
+
+.mb-4 {
+  margin-bottom: 16px;
+}
+
+.mt-4 {
+  margin-top: 16px;
+}
+
+// Full width button
+.full-width {
+  width: 100%;
+}
+
+// Mobile navigation
+.mobile-nav {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: white;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  justify-content: space-around;
+  padding: 8px 0;
+  z-index: 1000;
+}
+
+.nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-size: 12px;
+  color: #64748b;
+  text-decoration: none;
+  padding: 8px;
+
+  &.active {
+    color: #6366f1;
+  }
+
+  mat-icon {
+    margin-bottom: 4px;
+  }
+}
+
+// Main content padding for mobile nav
+.main-content {
+  padding-bottom: 80px;
+}
+
+// Amount displays
+.amount {
+  font-weight: 600;
+  font-size: 1.25rem;
+
+  &.income {
+    color: #22c55e;
+  }
+
+  &.expense {
+    color: #ef4444;
+  }
+}
+
+// Responsive
+@media (min-width: 768px) {
+  .mobile-nav {
+    display: none;
+  }
+
+  .main-content {
+    padding-bottom: 0;
+  }
+}
