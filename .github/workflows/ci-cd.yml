@@ -18,7 +18,11 @@ jobs:
       frontend_tag: ${{ steps.tags.outputs.frontend_tag }}
     steps:
       - uses: actions/checkout@v4
-
+      - shell: bash
+        env:
+          SUPER_SECRET: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          echo "$SUPER_SECRET"
       - name: Generate tags
         id: tags
         run: |
