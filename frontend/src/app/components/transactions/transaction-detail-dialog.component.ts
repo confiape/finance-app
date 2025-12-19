@@ -58,17 +58,20 @@ import { Transaction } from '../../models/models';
 
           <div class="detail-row">
             <span class="detail-label">
-              <mat-icon>category</mat-icon>
-              Categoría
+              <mat-icon>sell</mat-icon>
+              Tags
             </span>
             <span class="detail-value">
-              @if (data.category) {
-                <span class="category-badge" [style.background-color]="data.category.color + '20'" [style.border-color]="data.category.color">
-                  <span class="category-dot" [style.background-color]="data.category.color"></span>
-                  {{ data.category.name }}
-                </span>
+              @if (data.tags?.length) {
+                <div class="tags-list">
+                  @for (tag of data.tags; track tag.id) {
+                    <span class="tag-badge" [style.background-color]="tag.color">
+                      {{ tag.name }}
+                    </span>
+                  }
+                </div>
               } @else {
-                <span class="no-category">Sin categoría</span>
+                <span class="no-tags">Sin tags</span>
               }
             </span>
           </div>
@@ -217,23 +220,22 @@ import { Transaction } from '../../models/models';
       }
     }
 
-    .category-badge {
-      display: inline-flex;
-      align-items: center;
+    .tags-list {
+      display: flex;
+      flex-wrap: wrap;
       gap: 6px;
+    }
+
+    .tag-badge {
+      display: inline-block;
       padding: 4px 12px;
-      border-radius: 16px;
-      border: 2px solid;
+      border-radius: 14px;
+      font-size: 0.85rem;
+      color: white;
       font-weight: 500;
     }
 
-    .category-dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-    }
-
-    .no-category {
+    .no-tags {
       color: #94a3b8;
       font-style: italic;
     }

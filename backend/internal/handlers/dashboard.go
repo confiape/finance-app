@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/lib/pq"
 	"github.com/warren/finance-app/internal/database"
 	"github.com/warren/finance-app/internal/models"
 )
@@ -15,6 +16,7 @@ func GetDashboard(c *gin.Context) {
 	// Get date range (default: current month)
 	startDate := c.Query("start_date")
 	endDate := c.Query("end_date")
+	accountType := c.Query("account_type")
 
 	if startDate == "" {
 		now := time.Now()
@@ -26,15 +28,23 @@ func GetDashboard(c *gin.Context) {
 
 	var summary models.DashboardSummary
 
+	// Build account type filter
+	accountTypeFilter := ""
+	if accountType != "" {
+		accountTypeFilter = " AND a.account_type = '" + accountType + "'"
+	}
+
 	// Get totals
-	err := database.DB.QueryRow(`
+	totalsQuery := `
 		SELECT
-			COALESCE(SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END), 0) as total_income,
-			COALESCE(SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END), 0) as total_expense,
+			COALESCE(SUM(CASE WHEN t.type = 'income' THEN t.amount ELSE 0 END), 0) as total_income,
+			COALESCE(SUM(CASE WHEN t.type = 'expense' THEN t.amount ELSE 0 END), 0) as total_expense,
 			COUNT(*) as transaction_count
-		FROM transactions
-		WHERE user_id = $1 AND date BETWEEN $2 AND $3
-	`, userID, startDate, endDate).Scan(&summary.TotalIncome, &summary.TotalExpense, &summary.TransactionCount)
+		FROM transactions t
+		LEFT JOIN accounts a ON t.account_id = a.id
+		WHERE t.user_id = $1 AND t.date BETWEEN $2 AND $3` + accountTypeFilter
+
+	err := database.DB.QueryRow(totalsQuery, userID, startDate, endDate).Scan(&summary.TotalIncome, &summary.TotalExpense, &summary.TransactionCount)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error fetching summary"})
@@ -43,50 +53,54 @@ func GetDashboard(c *gin.Context) {
 
 	summary.Balance = summary.TotalIncome - summary.TotalExpense
 
-	// Get breakdown by category
-	rows, err := database.DB.Query(`
+	// Get breakdown by tag - group by tag AND type so each tag can appear once per transaction type
+	// Also calculate totals by currency (PEN and USD)
+	tagQuery := `
 		SELECT
-			c.id, c.name, c.color, c.type,
+			tg.id, tg.name, tg.color,
 			COALESCE(SUM(t.amount), 0) as total,
-			COUNT(t.id) as count
-		FROM categories c
-		LEFT JOIN transactions t ON t.category_id = c.id
-			AND t.date BETWEEN $2 AND $3
-		WHERE c.user_id = $1
-		GROUP BY c.id, c.name, c.color, c.type
-		HAVING COUNT(t.id) > 0
-		ORDER BY total DESC
-	`, userID, startDate, endDate)
+			COALESCE(SUM(CASE WHEN t.currency = 'PEN' THEN t.amount ELSE 0 END), 0) as total_pen,
+			COALESCE(SUM(CASE WHEN t.currency = 'USD' THEN t.amount ELSE 0 END), 0) as total_usd,
+			COUNT(DISTINCT t.id) as count,
+			t.type
+		FROM tags tg
+		JOIN transaction_tags tt ON tg.id = tt.tag_id
+		JOIN transactions t ON tt.transaction_id = t.id
+		LEFT JOIN accounts a ON t.account_id = a.id
+		WHERE tg.user_id = $1 AND t.date BETWEEN $2 AND $3` + accountTypeFilter + `
+		GROUP BY tg.id, tg.name, tg.color, t.type
+		HAVING COUNT(DISTINCT t.id) > 0
+		ORDER BY total DESC`
+	rows, err := database.DB.Query(tagQuery, userID, startDate, endDate)
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error fetching category summary"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error fetching tag summary"})
 		return
 	}
 	defer rows.Close()
 
 	for rows.Next() {
-		var cs models.CategorySummary
-		if err := rows.Scan(&cs.CategoryID, &cs.CategoryName, &cs.Color, &cs.Type, &cs.Total, &cs.Count); err != nil {
+		var ts models.TagSummary
+		if err := rows.Scan(&ts.TagID, &ts.TagName, &ts.Color, &ts.Total, &ts.TotalPEN, &ts.TotalUSD, &ts.Count, &ts.Type); err != nil {
 			continue
 		}
-		summary.ByCategory = append(summary.ByCategory, cs)
+		summary.ByTag = append(summary.ByTag, ts)
 	}
 
-	if summary.ByCategory == nil {
-		summary.ByCategory = []models.CategorySummary{}
+	if summary.ByTag == nil {
+		summary.ByTag = []models.TagSummary{}
 	}
 
 	// Get recent transactions
-	recentRows, err := database.DB.Query(`
-		SELECT t.id, t.user_id, t.category_id, t.description, t.amount, t.type,
-		       t.date, t.source, t.created_at, t.updated_at,
-		       c.name, c.color
+	recentQuery := `
+		SELECT t.id, t.user_id, t.description, t.detail, t.amount, t.currency, t.type,
+		       t.date, t.source, t.created_at, t.updated_at
 		FROM transactions t
-		LEFT JOIN categories c ON t.category_id = c.id
-		WHERE t.user_id = $1
+		LEFT JOIN accounts a ON t.account_id = a.id
+		WHERE t.user_id = $1 AND t.date BETWEEN $2 AND $3` + accountTypeFilter + `
 		ORDER BY t.date DESC, t.created_at DESC
-		LIMIT 10
-	`, userID)
+		LIMIT 10`
+	recentRows, err := database.DB.Query(recentQuery, userID, startDate, endDate)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error fetching recent transactions"})
@@ -94,26 +108,44 @@ func GetDashboard(c *gin.Context) {
 	}
 	defer recentRows.Close()
 
+	transactionIDs := []int{}
 	for recentRows.Next() {
 		var t models.Transaction
-		var catName, catColor *string
-
 		if err := recentRows.Scan(
-			&t.ID, &t.UserID, &t.CategoryID, &t.Description, &t.Amount, &t.Type,
+			&t.ID, &t.UserID, &t.Description, &t.Detail, &t.Amount, &t.Currency, &t.Type,
 			&t.Date, &t.Source, &t.CreatedAt, &t.UpdatedAt,
-			&catName, &catColor,
 		); err != nil {
 			continue
 		}
+		t.Tags = []models.Tag{}
+		summary.RecentTx = append(summary.RecentTx, t)
+		transactionIDs = append(transactionIDs, t.ID)
+	}
 
-		if catName != nil {
-			t.Category = &models.Category{
-				Name:  *catName,
-				Color: *catColor,
+	// Fetch tags for recent transactions
+	if len(transactionIDs) > 0 {
+		tagRows, err := database.DB.Query(`
+			SELECT tt.transaction_id, tg.id, tg.user_id, tg.name, tg.color, tg.created_at
+			FROM transaction_tags tt
+			JOIN tags tg ON tt.tag_id = tg.id
+			WHERE tt.transaction_id = ANY($1)
+		`, pq.Array(transactionIDs))
+		if err == nil {
+			defer tagRows.Close()
+			tagMap := make(map[int][]models.Tag)
+			for tagRows.Next() {
+				var txID int
+				var tag models.Tag
+				if err := tagRows.Scan(&txID, &tag.ID, &tag.UserID, &tag.Name, &tag.Color, &tag.CreatedAt); err == nil {
+					tagMap[txID] = append(tagMap[txID], tag)
+				}
+			}
+			for i := range summary.RecentTx {
+				if tags, ok := tagMap[summary.RecentTx[i].ID]; ok {
+					summary.RecentTx[i].Tags = tags
+				}
 			}
 		}
-
-		summary.RecentTx = append(summary.RecentTx, t)
 	}
 
 	if summary.RecentTx == nil {

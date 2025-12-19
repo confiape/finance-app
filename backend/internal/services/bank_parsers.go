@@ -47,14 +47,26 @@ func GetSupportedBanks() []map[string]string {
 	return banks
 }
 
-// ParseBBVAAmount parses BBVA amount format: "S/ -30.00" or "S/ 3,100.00"
-func ParseBBVAAmount(amountStr string) (float64, string) {
-	// Remove currency symbol and spaces
-	amountStr = strings.TrimSpace(amountStr)
-	amountStr = strings.ReplaceAll(amountStr, "S/", "")
+// ParseBBVAAmount parses BBVA amount format: "S/ -30.00", "S/ 3,100.00", "US$ 108.09"
+// Returns: amount, type (income/expense), currency (PEN/USD)
+func ParseBBVAAmount(amountStr string) (float64, string, string) {
 	amountStr = strings.TrimSpace(amountStr)
 
-	return parseAmount(amountStr)
+	// Detect currency before removing symbols
+	currency := "PEN" // Default to Peruvian Sol
+	if strings.Contains(amountStr, "US$") || strings.Contains(amountStr, "USD") || strings.Contains(amountStr, "US ") {
+		currency = "USD"
+	}
+
+	// Remove currency symbols
+	amountStr = strings.ReplaceAll(amountStr, "S/", "")
+	amountStr = strings.ReplaceAll(amountStr, "US$", "")
+	amountStr = strings.ReplaceAll(amountStr, "USD", "")
+	amountStr = strings.ReplaceAll(amountStr, "$", "")
+	amountStr = strings.TrimSpace(amountStr)
+
+	amount, txType := parseAmount(amountStr)
+	return amount, txType, currency
 }
 
 // ParseBBVADate parses BBVA date format: "16/12/2025"
@@ -116,14 +128,16 @@ func ParseRowByBank(row []string, bankID string) *ParsedTransaction {
 	var date string
 	var amount float64
 	var txType string
+	var currency string
 
 	switch bankID {
 	case "bbva":
 		date = ParseBBVADate(dateStr)
-		amount, txType = ParseBBVAAmount(amountStr)
+		amount, txType, currency = ParseBBVAAmount(amountStr)
 	default:
 		date = parseDate(dateStr)
 		amount, txType = parseAmount(amountStr)
+		currency = "PEN" // Default for generic parser
 	}
 
 	if date == "" || amount == 0 {
@@ -134,6 +148,7 @@ func ParseRowByBank(row []string, bankID string) *ParsedTransaction {
 		Date:        date,
 		Description: strings.TrimSpace(description),
 		Amount:      amount,
+		Currency:    currency,
 		Type:        txType,
 		RawText:     strings.Join(row, " | "),
 	}

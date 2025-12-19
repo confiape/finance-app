@@ -5,12 +5,18 @@ import (
 	"os"
 
 	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
 	"github.com/warren/finance-app/internal/database"
 	"github.com/warren/finance-app/internal/handlers"
 	"github.com/warren/finance-app/internal/middleware"
 )
 
 func main() {
+	// Load .env file (ignore error if not exists, use env vars directly)
+	if err := godotenv.Load(); err != nil {
+		log.Println("No .env file found, using environment variables")
+	}
+
 	// Connect to database
 	if err := database.Connect(); err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
@@ -50,11 +56,12 @@ func main() {
 		// User
 		api.GET("/auth/me", handlers.GetMe)
 
-		// Categories
-		api.GET("/categories", handlers.GetCategories)
-		api.POST("/categories", handlers.CreateCategory)
-		api.PUT("/categories/:id", handlers.UpdateCategory)
-		api.DELETE("/categories/:id", handlers.DeleteCategory)
+		// Tags
+		api.GET("/tags", handlers.GetTags)
+		api.POST("/tags", handlers.CreateTag)
+		api.GET("/tags/:id", handlers.GetTag)
+		api.PUT("/tags/:id", handlers.UpdateTag)
+		api.DELETE("/tags/:id", handlers.DeleteTag)
 
 		// Accounts
 		api.GET("/accounts", handlers.GetAccounts)
@@ -70,7 +77,8 @@ func main() {
 		api.PUT("/transactions/:id", handlers.UpdateTransaction)
 		api.DELETE("/transactions/:id", handlers.DeleteTransaction)
 		api.DELETE("/transactions", handlers.DeleteTransactionsBatch)
-		api.PATCH("/transactions/:id/category", handlers.UpdateTransactionCategory)
+		api.GET("/transactions/:id/tags", handlers.GetTagsForTransaction)
+		api.PUT("/transactions/:id/tags", handlers.SetTransactionTags)
 
 		// Dashboard
 		api.GET("/dashboard", handlers.GetDashboard)

@@ -10,8 +10,9 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatDatepickerModule } from '@angular/material/datepicker';
 import { MatNativeDateModule } from '@angular/material/core';
 import { MatButtonToggleModule } from '@angular/material/button-toggle';
+import { MatChipsModule } from '@angular/material/chips';
 import { ApiService } from '../../services/api.service';
-import { Transaction, Category } from '../../models/models';
+import { Transaction, Tag } from '../../models/models';
 
 @Component({
   selector: 'app-transaction-dialog',
@@ -27,7 +28,8 @@ import { Transaction, Category } from '../../models/models';
     MatIconModule,
     MatDatepickerModule,
     MatNativeDateModule,
-    MatButtonToggleModule
+    MatButtonToggleModule,
+    MatChipsModule
   ],
   template: `
     <h2 mat-dialog-title>{{ data.transaction ? 'Editar' : 'Nueva' }} Transacción</h2>
@@ -61,30 +63,29 @@ import { Transaction, Category } from '../../models/models';
       </mat-form-field>
 
       <mat-form-field appearance="outline" class="full-width">
-        <mat-label>Categoría</mat-label>
-        <mat-select [(ngModel)]="form.category_id">
-          @for (cat of filteredCategories(); track cat.id) {
-            @if (!cat.parent_id) {
-              <mat-option [value]="cat.id">
-                <span class="category-option">
-                  <span class="category-color" [style.background-color]="cat.color"></span>
-                  {{ cat.name }}
-                </span>
-              </mat-option>
-              @if (cat.subcategories?.length) {
-                @for (sub of cat.subcategories; track sub.id) {
-                  <mat-option [value]="sub.id" class="subcategory-option">
-                    <span class="category-option subcategory">
-                      <span class="category-color" [style.background-color]="sub.color"></span>
-                      {{ sub.name }}
-                    </span>
-                  </mat-option>
-                }
-              }
-            }
+        <mat-label>Tags</mat-label>
+        <mat-select [(ngModel)]="form.tag_ids" multiple>
+          @for (tag of data.tags; track tag.id) {
+            <mat-option [value]="tag.id">
+              <span class="tag-option">
+                <span class="tag-color" [style.background-color]="tag.color"></span>
+                {{ tag.name }}
+              </span>
+            </mat-option>
           }
         </mat-select>
       </mat-form-field>
+
+      <!-- Selected tags preview -->
+      @if (form.tag_ids.length > 0) {
+        <div class="selected-tags">
+          @for (tagId of form.tag_ids; track tagId) {
+            <span class="tag-badge" [style.background-color]="getTagColor(tagId)">
+              {{ getTagName(tagId) }}
+            </span>
+          }
+        </div>
+      }
 
       <mat-form-field appearance="outline" class="full-width">
         <mat-label>Fecha</mat-label>
@@ -118,44 +119,50 @@ import { Transaction, Category } from '../../models/models';
       }
     }
 
-    .category-option {
+    .tag-option {
       display: flex;
       align-items: center;
       gap: 8px;
-
-      &.subcategory {
-        padding-left: 16px;
-        font-size: 0.9em;
-      }
     }
 
-    .category-color {
+    .tag-color {
       width: 12px;
       height: 12px;
       border-radius: 50%;
     }
 
-    ::ng-deep .subcategory-option {
-      padding-left: 24px !important;
+    .selected-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+
+    .tag-badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 14px;
+      font-size: 0.8rem;
+      color: white;
+      font-weight: 500;
     }
   `]
 })
 export class TransactionDialogComponent implements OnInit {
   private dialogRef = inject(MatDialogRef<TransactionDialogComponent>);
   private apiService = inject(ApiService);
-  data = inject<{ transaction?: Transaction; categories: Category[] }>(MAT_DIALOG_DATA);
+  data = inject<{ transaction?: Transaction; tags: Tag[] }>(MAT_DIALOG_DATA);
 
   form = {
     description: '',
     detail: '',
     amount: 0,
     type: 'expense' as 'income' | 'expense',
-    category_id: null as number | null,
+    tag_ids: [] as number[],
     date: new Date()
   };
 
   saving = signal(false);
-  filteredCategories = signal<Category[]>([]);
 
   ngOnInit() {
     if (this.data.transaction) {
@@ -165,17 +172,18 @@ export class TransactionDialogComponent implements OnInit {
         detail: tx.detail || '',
         amount: tx.amount,
         type: tx.type,
-        category_id: tx.category_id || null,
+        tag_ids: tx.tags?.map(t => t.id) || [],
         date: new Date(tx.date)
       };
     }
-    this.updateFilteredCategories();
   }
 
-  updateFilteredCategories() {
-    this.filteredCategories.set(
-      this.data.categories.filter(c => c.type === this.form.type)
-    );
+  getTagName(tagId: number): string {
+    return this.data.tags.find(t => t.id === tagId)?.name || '';
+  }
+
+  getTagColor(tagId: number): string {
+    return this.data.tags.find(t => t.id === tagId)?.color || '#64748b';
   }
 
   save() {
@@ -183,12 +191,12 @@ export class TransactionDialogComponent implements OnInit {
 
     this.saving.set(true);
 
-    const payload: Partial<Transaction> = {
+    const payload: Partial<Transaction> & { tag_ids?: number[] } = {
       description: this.form.description,
       detail: this.form.detail || undefined,
       amount: this.form.amount,
       type: this.form.type,
-      category_id: this.form.category_id ?? undefined,
+      tag_ids: this.form.tag_ids,
       date: this.form.date.toISOString().split('T')[0]
     };
 

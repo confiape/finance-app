@@ -3,7 +3,7 @@ import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { environment } from '../../environments/environment';
 import {
-  Category,
+  Tag,
   Transaction,
   DashboardSummary,
   ImportResponse,
@@ -20,33 +20,25 @@ export class ApiService {
 
   constructor(private http: HttpClient) {}
 
-  // Categories
-  getCategories(type?: 'income' | 'expense'): Observable<Category[]> {
-    let params = new HttpParams();
-    if (type) {
-      params = params.set('type', type);
-    }
-    return this.http.get<Category[]>(`${this.apiUrl}/categories`, { params });
+  // Tags
+  getTags(): Observable<Tag[]> {
+    return this.http.get<Tag[]>(`${this.apiUrl}/tags`);
   }
 
-  getCategoriesFlat(type?: 'income' | 'expense'): Observable<Category[]> {
-    let params = new HttpParams().set('flat', 'true');
-    if (type) {
-      params = params.set('type', type);
-    }
-    return this.http.get<Category[]>(`${this.apiUrl}/categories`, { params });
+  getTag(id: number): Observable<Tag> {
+    return this.http.get<Tag>(`${this.apiUrl}/tags/${id}`);
   }
 
-  createCategory(category: Partial<Category>): Observable<Category> {
-    return this.http.post<Category>(`${this.apiUrl}/categories`, category);
+  createTag(tag: Partial<Tag>): Observable<Tag> {
+    return this.http.post<Tag>(`${this.apiUrl}/tags`, tag);
   }
 
-  updateCategory(id: number, category: Partial<Category>): Observable<Category> {
-    return this.http.put<Category>(`${this.apiUrl}/categories/${id}`, category);
+  updateTag(id: number, tag: Partial<Tag>): Observable<Tag> {
+    return this.http.put<Tag>(`${this.apiUrl}/tags/${id}`, tag);
   }
 
-  deleteCategory(id: number): Observable<void> {
-    return this.http.delete<void>(`${this.apiUrl}/categories/${id}`);
+  deleteTag(id: number): Observable<void> {
+    return this.http.delete<void>(`${this.apiUrl}/tags/${id}`);
   }
 
   // Transactions
@@ -54,7 +46,9 @@ export class ApiService {
     start_date?: string;
     end_date?: string;
     type?: string;
-    category_id?: number;
+    tag_id?: number;
+    account_id?: number;
+    account_type?: string;
   }): Observable<Transaction[]> {
     let params = new HttpParams();
     if (filters) {
@@ -67,11 +61,11 @@ export class ApiService {
     return this.http.get<Transaction[]>(`${this.apiUrl}/transactions`, { params });
   }
 
-  createTransaction(transaction: Partial<Transaction>): Observable<Transaction> {
+  createTransaction(transaction: Partial<Transaction> & { tag_ids?: number[] }): Observable<Transaction> {
     return this.http.post<Transaction>(`${this.apiUrl}/transactions`, transaction);
   }
 
-  updateTransaction(id: number, transaction: Partial<Transaction>): Observable<Transaction> {
+  updateTransaction(id: number, transaction: Partial<Transaction> & { tag_ids?: number[] }): Observable<Transaction> {
     return this.http.put<Transaction>(`${this.apiUrl}/transactions/${id}`, transaction);
   }
 
@@ -85,9 +79,13 @@ export class ApiService {
     });
   }
 
-  updateTransactionCategory(id: number, categoryId: number): Observable<Transaction> {
-    return this.http.patch<Transaction>(`${this.apiUrl}/transactions/${id}/category`, {
-      category_id: categoryId
+  getTransactionTags(transactionId: number): Observable<Tag[]> {
+    return this.http.get<Tag[]>(`${this.apiUrl}/transactions/${transactionId}/tags`);
+  }
+
+  setTransactionTags(transactionId: number, tagIds: number[]): Observable<void> {
+    return this.http.put<void>(`${this.apiUrl}/transactions/${transactionId}/tags`, {
+      tag_ids: tagIds
     });
   }
 
@@ -117,10 +115,11 @@ export class ApiService {
   }
 
   // Dashboard
-  getDashboard(startDate?: string, endDate?: string): Observable<DashboardSummary> {
+  getDashboard(startDate?: string, endDate?: string, accountType?: string): Observable<DashboardSummary> {
     let params = new HttpParams();
     if (startDate) params = params.set('start_date', startDate);
     if (endDate) params = params.set('end_date', endDate);
+    if (accountType) params = params.set('account_type', accountType);
     return this.http.get<DashboardSummary>(`${this.apiUrl}/dashboard`, { params });
   }
 

@@ -11,16 +11,17 @@ import (
 	"github.com/warren/finance-app/internal/services"
 )
 
-// TransactionWithSuggestion includes parsed transaction with category suggestion
+// TransactionWithSuggestion includes parsed transaction with tag suggestions
 type TransactionWithSuggestion struct {
-	Description         string  `json:"description"`
-	Amount              float64 `json:"amount"`
-	Type                string  `json:"type"`
-	Date                string  `json:"date"`
-	RawText             string  `json:"raw_text"`
-	SuggestedCategoryID *int    `json:"suggested_category_id,omitempty"`
-	IsDuplicate         bool    `json:"is_duplicate"`
-	ExistingCategoryID  *int    `json:"existing_category_id,omitempty"`
+	Description      string `json:"description"`
+	Amount           float64 `json:"amount"`
+	Currency         string  `json:"currency"`
+	Type             string  `json:"type"`
+	Date             string  `json:"date"`
+	RawText          string  `json:"raw_text"`
+	SuggestedTagIDs  []int   `json:"suggested_tag_ids"`
+	IsDuplicate      bool    `json:"is_duplicate"`
+	ExistingTagIDs   []int   `json:"existing_tag_ids"`
 }
 
 // GetBanks returns list of supported banks
@@ -130,48 +131,92 @@ func UploadFile(c *gin.Context) {
 	})
 }
 
-// enhanceTransactionsWithSuggestions checks for duplicates and suggests categories
+// enhanceTransactionsWithSuggestions checks for duplicates and suggests tags
 func enhanceTransactionsWithSuggestions(userID int, transactions []services.ParsedTransaction) []TransactionWithSuggestion {
 	result := make([]TransactionWithSuggestion, 0, len(transactions))
 
 	for _, tx := range transactions {
 		enhanced := TransactionWithSuggestion{
-			Description: tx.Description,
-			Amount:      tx.Amount,
-			Type:        tx.Type,
-			Date:        tx.Date,
-			RawText:     tx.RawText,
-			IsDuplicate: false,
+			Description:     tx.Description,
+			Amount:          tx.Amount,
+			Currency:        tx.Currency,
+			Type:            tx.Type,
+			Date:            tx.Date,
+			RawText:         tx.RawText,
+			IsDuplicate:     false,
+			SuggestedTagIDs: []int{},
+			ExistingTagIDs:  []int{},
 		}
 
 		// Check if exact transaction exists (same description, amount, date)
-		// Use ROUND for amount to avoid float precision issues
 		var existingID int
-		var existingCatID *int
 		err := database.DB.QueryRow(`
-			SELECT id, category_id FROM transactions
+			SELECT id FROM transactions
 			WHERE user_id = $1
 			AND LOWER(TRIM(description)) = LOWER(TRIM($2))
 			AND ROUND(amount::numeric, 2) = ROUND($3::numeric, 2)
 			AND date = $4::date
 			LIMIT 1
-		`, userID, tx.Description, tx.Amount, tx.Date).Scan(&existingID, &existingCatID)
+		`, userID, tx.Description, tx.Amount, tx.Date).Scan(&existingID)
 
 		if err == nil {
 			// Transaction exists - it's a duplicate
 			enhanced.IsDuplicate = true
-			if existingCatID != nil {
-				enhanced.ExistingCategoryID = existingCatID
-				enhanced.SuggestedCategoryID = existingCatID
+			enhanced.ExistingTagIDs = getTagsForTransaction(existingID)
+			enhanced.SuggestedTagIDs = enhanced.ExistingTagIDs
+		} else {
+			// Try fuzzy match
+			descPrefix := extractDescriptionPrefix(tx.Description)
+			if descPrefix != "" {
+				err = database.DB.QueryRow(`
+					SELECT id FROM transactions
+					WHERE user_id = $1
+					AND ROUND(amount::numeric, 2) = ROUND($2::numeric, 2)
+					AND date = $3::date
+					AND (
+						LOWER(description) LIKE $4
+						OR LOWER(description) LIKE $5
+					)
+					LIMIT 1
+				`, userID, tx.Amount, tx.Date, "%"+descPrefix+"%", descPrefix+"%").Scan(&existingID)
+
+				if err == nil {
+					enhanced.IsDuplicate = true
+					enhanced.ExistingTagIDs = getTagsForTransaction(existingID)
+					enhanced.SuggestedTagIDs = enhanced.ExistingTagIDs
+				}
+			}
+
+			// Check for split transactions
+			if !enhanced.IsDuplicate {
+				var totalAmount float64
+				var firstTxID *int
+				err = database.DB.QueryRow(`
+					SELECT COALESCE(SUM(amount), 0), (SELECT id FROM transactions
+						WHERE user_id = $1 AND LOWER(TRIM(description)) = LOWER(TRIM($2)) AND date = $3::date LIMIT 1)
+					FROM transactions
+					WHERE user_id = $1
+					AND LOWER(TRIM(description)) = LOWER(TRIM($2))
+					AND date = $3::date
+				`, userID, tx.Description, tx.Date).Scan(&totalAmount, &firstTxID)
+
+				if err == nil && totalAmount > 0 {
+					diff := tx.Amount - totalAmount
+					if diff >= -0.01 && diff <= 0.01 {
+						enhanced.IsDuplicate = true
+						if firstTxID != nil {
+							enhanced.ExistingTagIDs = getTagsForTransaction(*firstTxID)
+							enhanced.SuggestedTagIDs = enhanced.ExistingTagIDs
+						}
+					}
+				}
 			}
 		}
 
-		// If not a duplicate or no category found, try to suggest one
-		if enhanced.SuggestedCategoryID == nil {
-			suggestedCatID := findCategorySuggestion(userID, tx.Description, tx.Type)
-			if suggestedCatID != nil {
-				enhanced.SuggestedCategoryID = suggestedCatID
-			}
+		// If no tags found, try to suggest some
+		if len(enhanced.SuggestedTagIDs) == 0 {
+			suggestedTags := findTagSuggestions(userID, tx.Description, tx.Type)
+			enhanced.SuggestedTagIDs = suggestedTags
 		}
 
 		result = append(result, enhanced)
@@ -180,62 +225,121 @@ func enhanceTransactionsWithSuggestions(userID int, transactions []services.Pars
 	return result
 }
 
-// findCategorySuggestion finds a category based on similar past transactions
-func findCategorySuggestion(userID int, description string, txType string) *int {
+// getTagsForTransaction returns tag IDs for a transaction
+func getTagsForTransaction(transactionID int) []int {
+	rows, err := database.DB.Query(`
+		SELECT tag_id FROM transaction_tags WHERE transaction_id = $1
+	`, transactionID)
+	if err != nil {
+		return []int{}
+	}
+	defer rows.Close()
+
+	var tagIDs []int
+	for rows.Next() {
+		var tagID int
+		if err := rows.Scan(&tagID); err == nil {
+			tagIDs = append(tagIDs, tagID)
+		}
+	}
+	if tagIDs == nil {
+		return []int{}
+	}
+	return tagIDs
+}
+
+// extractDescriptionPrefix extracts a meaningful prefix from description for fuzzy matching
+// e.g., "MDOPAGO*MERCADO PAGO" -> "mdopago"
+// e.g., "(P) PAGO WEB DESACOPL" -> "pago"
+func extractDescriptionPrefix(desc string) string {
+	desc = strings.ToLower(strings.TrimSpace(desc))
+
+	// Remove common prefixes like "(P)" or "(C)"
+	if strings.HasPrefix(desc, "(") {
+		idx := strings.Index(desc, ")")
+		if idx > 0 && idx < 5 {
+			desc = strings.TrimSpace(desc[idx+1:])
+		}
+	}
+
+	// Get first word (split by space or special chars)
+	words := strings.FieldsFunc(desc, func(r rune) bool {
+		return r == ' ' || r == '*' || r == '-' || r == '_' || r == '.'
+	})
+
+	if len(words) == 0 {
+		return ""
+	}
+
+	// Return first significant word (at least 4 chars)
+	for _, word := range words {
+		if len(word) >= 4 {
+			return word
+		}
+	}
+
+	return words[0]
+}
+
+// findTagSuggestions finds tags based on similar past transactions
+func findTagSuggestions(userID int, description string, txType string) []int {
 	// Normalize description for comparison
 	descLower := strings.ToLower(description)
 
 	// Extract key words from description (first word usually identifies the merchant)
 	words := strings.Fields(descLower)
 	if len(words) == 0 {
-		return nil
+		return []int{}
 	}
 
 	// Try to find exact match first
-	var categoryID *int
+	var txID int
 	err := database.DB.QueryRow(`
-		SELECT category_id FROM transactions
-		WHERE user_id = $1 AND LOWER(description) = $2 AND category_id IS NOT NULL
-		ORDER BY created_at DESC
+		SELECT t.id FROM transactions t
+		JOIN transaction_tags tt ON t.id = tt.transaction_id
+		WHERE t.user_id = $1 AND LOWER(t.description) = $2
+		ORDER BY t.created_at DESC
 		LIMIT 1
-	`, userID, descLower).Scan(&categoryID)
+	`, userID, descLower).Scan(&txID)
 
-	if err == nil && categoryID != nil {
-		return categoryID
+	if err == nil {
+		return getTagsForTransaction(txID)
 	}
 
 	// Try to find by first word (merchant name)
 	firstWord := words[0]
 	if len(firstWord) >= 3 {
 		err = database.DB.QueryRow(`
-			SELECT category_id FROM transactions
-			WHERE user_id = $1 AND LOWER(description) LIKE $2 AND type = $3 AND category_id IS NOT NULL
-			ORDER BY created_at DESC
+			SELECT t.id FROM transactions t
+			JOIN transaction_tags tt ON t.id = tt.transaction_id
+			WHERE t.user_id = $1 AND LOWER(t.description) LIKE $2 AND t.type = $3
+			ORDER BY t.created_at DESC
 			LIMIT 1
-		`, userID, firstWord+"%", txType).Scan(&categoryID)
+		`, userID, firstWord+"%", txType).Scan(&txID)
 
-		if err == nil && categoryID != nil {
-			return categoryID
+		if err == nil {
+			return getTagsForTransaction(txID)
 		}
 	}
 
 	// Try partial match with any significant word
 	for _, word := range words {
-		if len(word) >= 4 { // Only consider words with 4+ characters
+		if len(word) >= 4 {
 			err = database.DB.QueryRow(`
-				SELECT category_id FROM transactions
-				WHERE user_id = $1 AND LOWER(description) LIKE $2 AND type = $3 AND category_id IS NOT NULL
-				ORDER BY created_at DESC
+				SELECT t.id FROM transactions t
+				JOIN transaction_tags tt ON t.id = tt.transaction_id
+				WHERE t.user_id = $1 AND LOWER(t.description) LIKE $2 AND t.type = $3
+				ORDER BY t.created_at DESC
 				LIMIT 1
-			`, userID, "%"+word+"%", txType).Scan(&categoryID)
+			`, userID, "%"+word+"%", txType).Scan(&txID)
 
-			if err == nil && categoryID != nil {
-				return categoryID
+			if err == nil {
+				return getTagsForTransaction(txID)
 			}
 		}
 	}
 
-	return nil
+	return []int{}
 }
 
 func ConfirmImport(c *gin.Context) {
@@ -248,9 +352,10 @@ func ConfirmImport(c *gin.Context) {
 			Description string  `json:"description"`
 			Detail      *string `json:"detail"`
 			Amount      float64 `json:"amount"`
+			Currency    string  `json:"currency"`
 			Type        string  `json:"type"`
 			Date        string  `json:"date"`
-			CategoryID  int     `json:"category_id"`
+			TagIDs      []int   `json:"tag_ids"`
 			RawText     string  `json:"raw_text"`
 			IsDuplicate bool    `json:"is_duplicate"`
 		} `json:"transactions" binding:"required"`
@@ -270,7 +375,7 @@ func ConfirmImport(c *gin.Context) {
 		return
 	}
 
-	// Insert transactions with categories (skip duplicates if marked)
+	// Insert transactions with tags (skip duplicates if marked)
 	var savedCount int
 	var skippedCount int
 
@@ -281,18 +386,30 @@ func ConfirmImport(c *gin.Context) {
 			continue
 		}
 
-		var catID *int
-		if tx.CategoryID > 0 {
-			catID = &tx.CategoryID
+		// Default currency to PEN if not specified
+		currency := tx.Currency
+		if currency == "" {
+			currency = "PEN"
 		}
 
-		_, err := database.DB.Exec(
-			`INSERT INTO transactions (user_id, account_id, category_id, description, detail, amount, type, date, source, raw_text)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'import', $9)`,
-			userID, req.AccountID, catID, tx.Description, tx.Detail, tx.Amount, tx.Type, tx.Date, tx.RawText,
-		)
+		var txID int
+		err := database.DB.QueryRow(
+			`INSERT INTO transactions (user_id, account_id, description, detail, amount, currency, type, date, source, raw_text)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'import', $9)
+			 RETURNING id`,
+			userID, req.AccountID, tx.Description, tx.Detail, tx.Amount, currency, tx.Type, tx.Date, tx.RawText,
+		).Scan(&txID)
+
 		if err == nil {
 			savedCount++
+			// Insert tags for this transaction
+			for _, tagID := range tx.TagIDs {
+				database.DB.Exec(`
+					INSERT INTO transaction_tags (transaction_id, tag_id)
+					SELECT $1, $2
+					WHERE EXISTS (SELECT 1 FROM tags WHERE id = $2 AND user_id = $3)
+				`, txID, tagID, userID)
+			}
 		}
 	}
 

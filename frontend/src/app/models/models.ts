@@ -11,34 +11,30 @@ export interface AuthResponse {
   user: User;
 }
 
-export interface Category {
+export interface Tag {
   id: number;
-  user_id?: number;
-  parent_id?: number;
+  user_id: number;
   name: string;
-  type: 'income' | 'expense';
   color: string;
-  icon: string;
-  is_default: boolean;
   created_at: string;
-  subcategories?: Category[];
-  parent?: Category;
 }
 
 export interface Transaction {
   id: number;
   user_id: number;
-  category_id?: number;
+  account_id?: number;
   description: string;
   detail?: string;
   amount: number;
+  currency: string; // PEN, USD
   type: 'income' | 'expense';
   date: string;
   source: string;
   raw_text?: string;
   created_at: string;
   updated_at: string;
-  category?: Category;
+  tags: Tag[];
+  account?: Account;
 }
 
 export interface DashboardSummary {
@@ -46,15 +42,17 @@ export interface DashboardSummary {
   total_expense: number;
   balance: number;
   transaction_count: number;
-  by_category: CategorySummary[];
+  by_tag: TagSummary[];
   recent_transactions: Transaction[];
 }
 
-export interface CategorySummary {
-  category_id: number;
-  category_name: string;
+export interface TagSummary {
+  tag_id: number;
+  tag_name: string;
   color: string;
   total: number;
+  total_pen: number;
+  total_usd: number;
   count: number;
   type: string;
 }
@@ -63,13 +61,14 @@ export interface ParsedTransaction {
   description: string;
   detail?: string;
   amount: number;
+  currency: string; // PEN, USD
   type: 'income' | 'expense';
   date: string;
   raw_text: string;
-  category_id?: number;
-  suggested_category_id?: number;
+  tag_ids?: number[];
+  suggested_tag_ids?: number[];
   is_duplicate?: boolean;
-  existing_category_id?: number;
+  existing_tag_ids?: number[];
 }
 
 export interface ImportResponse {

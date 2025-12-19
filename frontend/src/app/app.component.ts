@@ -38,8 +38,8 @@ import { AuthService } from './services/auth.service';
           <a mat-button routerLink="/import" routerLinkActive="active">
             <mat-icon>upload_file</mat-icon> Importar
           </a>
-          <a mat-button routerLink="/categories" routerLinkActive="active">
-            <mat-icon>category</mat-icon> Categorías
+          <a mat-button routerLink="/tags" routerLinkActive="active">
+            <mat-icon>sell</mat-icon> Tags
           </a>
         </nav>
         <button mat-icon-button [matMenuTriggerFor]="menu">
@@ -75,9 +75,9 @@ import { AuthService } from './services/auth.service';
           <mat-icon>upload_file</mat-icon>
           <span>Importar</span>
         </a>
-        <a routerLink="/categories" routerLinkActive="active" class="nav-item">
-          <mat-icon>category</mat-icon>
-          <span>Categ.</span>
+        <a routerLink="/tags" routerLinkActive="active" class="nav-item">
+          <mat-icon>sell</mat-icon>
+          <span>Tags</span>
         </a>
       </nav>
     }

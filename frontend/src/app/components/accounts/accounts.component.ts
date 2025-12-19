@@ -119,7 +119,9 @@ import { Account, AccountBalance } from '../../models/models';
               </div>
 
               <div class="account-currency">
-                <span class="currency-badge">{{ account.currency }}</span>
+                @for (curr of account.currency.split(','); track curr) {
+                  <span class="currency-badge" [class.usd]="curr.trim() === 'USD'">{{ curr.trim() }}</span>
+                }
               </div>
             </mat-card>
           }
@@ -162,13 +164,19 @@ import { Account, AccountBalance } from '../../models/models';
                 </mat-form-field>
               }
 
-              <mat-form-field appearance="outline">
-                <mat-label>Moneda</mat-label>
-                <mat-select [(ngModel)]="formData.currency" name="currency" required>
-                  <mat-option value="PEN">PEN - Soles</mat-option>
-                  <mat-option value="USD">USD - Dólares</mat-option>
-                </mat-select>
-              </mat-form-field>
+              <div class="currency-selection">
+                <label class="field-label">Monedas que maneja</label>
+                <div class="currency-checkboxes">
+                  <label class="currency-checkbox" [class.selected]="formData.currencies.includes('PEN')">
+                    <input type="checkbox" [checked]="formData.currencies.includes('PEN')" (change)="toggleCurrency('PEN')">
+                    <span class="currency-label">S/ PEN - Soles</span>
+                  </label>
+                  <label class="currency-checkbox" [class.selected]="formData.currencies.includes('USD')">
+                    <input type="checkbox" [checked]="formData.currencies.includes('USD')" (change)="toggleCurrency('USD')">
+                    <span class="currency-label">US$ USD - Dólares</span>
+                  </label>
+                </div>
+              </div>
 
               <mat-form-field appearance="outline">
                 <mat-label>Número de cuenta (opcional)</mat-label>
@@ -364,6 +372,9 @@ import { Account, AccountBalance } from '../../models/models';
     }
 
     .account-currency {
+      display: flex;
+      gap: 6px;
+
       .currency-badge {
         display: inline-block;
         padding: 4px 8px;
@@ -372,6 +383,62 @@ import { Account, AccountBalance } from '../../models/models';
         font-size: 0.75rem;
         font-weight: 500;
         color: #64748b;
+
+        &.usd {
+          background: #dbeafe;
+          color: #1d4ed8;
+        }
+      }
+    }
+
+    .currency-selection {
+      margin-bottom: 16px;
+
+      .field-label {
+        display: block;
+        font-size: 0.875rem;
+        color: #64748b;
+        margin-bottom: 8px;
+      }
+    }
+
+    .currency-checkboxes {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .currency-checkbox {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 16px;
+      border: 2px solid #e2e8f0;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+
+      input[type="checkbox"] {
+        display: none;
+      }
+
+      .currency-label {
+        font-weight: 500;
+        color: #475569;
+      }
+
+      &:hover {
+        border-color: #6366f1;
+        background: #f5f3ff;
+      }
+
+      &.selected {
+        border-color: #6366f1;
+        background: #eef2ff;
+
+        .currency-label {
+          color: #6366f1;
+        }
       }
     }
 
@@ -426,7 +493,7 @@ export class AccountsComponent implements OnInit {
     name: '',
     bank: '',
     account_type: 'debit' as 'debit' | 'credit',
-    currency: 'PEN',
+    currencies: ['PEN'] as string[],
     account_number: '',
     color: '#6366f1'
   };
@@ -466,11 +533,13 @@ export class AccountsComponent implements OnInit {
   openForm(account?: Account) {
     if (account) {
       this.editingAccount.set(account);
+      // Parse currencies from account.currency (comma-separated or single value)
+      const currencies = account.currency ? account.currency.split(',').map(c => c.trim()) : ['PEN'];
       this.formData = {
         name: account.name,
         bank: account.bank || '',
         account_type: account.account_type || 'debit',
-        currency: account.currency,
+        currencies: currencies,
         account_number: account.account_number || '',
         color: account.color
       };
@@ -480,12 +549,24 @@ export class AccountsComponent implements OnInit {
         name: '',
         bank: '',
         account_type: 'debit',
-        currency: 'PEN',
+        currencies: ['PEN'],
         account_number: '',
         color: '#6366f1'
       };
     }
     this.showForm.set(true);
+  }
+
+  toggleCurrency(currency: string) {
+    const index = this.formData.currencies.indexOf(currency);
+    if (index > -1) {
+      // Don't allow removing if it's the only currency
+      if (this.formData.currencies.length > 1) {
+        this.formData.currencies.splice(index, 1);
+      }
+    } else {
+      this.formData.currencies.push(currency);
+    }
   }
 
   closeForm() {
@@ -500,7 +581,7 @@ export class AccountsComponent implements OnInit {
       name: this.formData.name,
       bank: this.formData.bank || undefined,
       account_type: this.formData.account_type,
-      currency: this.formData.currency,
+      currency: this.formData.currencies.join(','),
       account_number: this.formData.account_number || undefined,
       color: this.formData.color
     };

@@ -520,6 +520,11 @@ __debug_bin*
 # Air live reload temp directory
 tmp/
 
+# Backend environment files
+backend/.env
+backend/.env.local
+backend/.env.*.local
+
 ##
 ## Angular / Node.js
 ##

@@ -16,6 +16,7 @@ import (
 type ParsedTransaction struct {
 	Description string  `json:"description"`
 	Amount      float64 `json:"amount"`
+	Currency    string  `json:"currency"` // PEN, USD
 	Type        string  `json:"type"`
 	Date        string  `json:"date"`
 	RawText     string  `json:"raw_text"`

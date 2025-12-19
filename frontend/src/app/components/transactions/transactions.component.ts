@@ -1,5 +1,5 @@
 import { Component, inject, signal, OnInit, computed } from '@angular/core';
-import { CommonModule, CurrencyPipe } from '@angular/common';
+import { CommonModule, DecimalPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatCardModule } from '@angular/material/card';
 import { MatIconModule } from '@angular/material/icon';
@@ -15,7 +15,7 @@ import { MatChipsModule } from '@angular/material/chips';
 import { MatMenuModule } from '@angular/material/menu';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { ApiService } from '../../services/api.service';
-import { Transaction, Category } from '../../models/models';
+import { Transaction, Tag } from '../../models/models';
 import { TransactionDialogComponent } from './transaction-dialog.component';
 import { TransactionDetailDialogComponent } from './transaction-detail-dialog.component';
 
@@ -44,7 +44,7 @@ interface DateFilter {
     MatChipsModule,
     MatMenuModule,
     MatCheckboxModule,
-    CurrencyPipe
+    DecimalPipe
   ],
   template: `
     <div class="container">
@@ -104,7 +104,7 @@ interface DateFilter {
           </div>
         </div>
 
-        <!-- Type and Category Filters -->
+        <!-- Type and Tag Filters -->
         <div class="filters">
           <mat-chip-listbox [value]="filterType" (change)="onFilterChange($event)">
             <mat-chip-option value="">Todos</mat-chip-option>
@@ -112,30 +112,36 @@ interface DateFilter {
             <mat-chip-option value="expense">Gastos</mat-chip-option>
           </mat-chip-listbox>
 
-          <mat-form-field appearance="outline" class="category-filter">
-            <mat-label>Categoría</mat-label>
-            <mat-select [(value)]="filterCategory" (selectionChange)="loadTransactions()">
-              <mat-option [value]="null">Todas</mat-option>
-              @for (cat of filteredCategories(); track cat.id) {
-                @if (!cat.parent_id) {
-                  <mat-option [value]="cat.id">
-                    <span class="category-option">
-                      <span class="cat-dot" [style.background-color]="cat.color"></span>
-                      {{ cat.name }}
-                    </span>
-                  </mat-option>
-                  @if (cat.subcategories?.length) {
-                    @for (sub of cat.subcategories; track sub.id) {
-                      <mat-option [value]="sub.id" class="subcategory-option">
-                        <span class="category-option subcategory">
-                          <span class="cat-dot" [style.background-color]="sub.color"></span>
-                          {{ sub.name }}
-                        </span>
-                      </mat-option>
-                    }
-                  }
-                }
+          <mat-form-field appearance="outline" class="tag-filter">
+            <mat-label>Tags</mat-label>
+            <mat-select [(value)]="filterTags" (selectionChange)="loadTransactions()" multiple>
+              @for (tag of tags(); track tag.id) {
+                <mat-option [value]="tag.id">
+                  <span class="tag-option">
+                    <span class="tag-dot" [style.background-color]="tag.color"></span>
+                    {{ tag.name }}
+                  </span>
+                </mat-option>
               }
+            </mat-select>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="filter-field">
+            <mat-label>Tipo de cuenta</mat-label>
+            <mat-select [(value)]="filterAccountType" (selectionChange)="loadTransactions()">
+              <mat-option [value]="null">Todas</mat-option>
+              <mat-option value="debit">Débito</mat-option>
+              <mat-option value="credit">Crédito</mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="filter-field">
+            <mat-label>Ordenar por</mat-label>
+            <mat-select [(value)]="sortBy" (selectionChange)="applySorting()">
+              <mat-option value="amount_desc">Mayor monto</mat-option>
+              <mat-option value="amount_asc">Menor monto</mat-option>
+              <mat-option value="date_desc">Más reciente</mat-option>
+              <mat-option value="date_asc">Más antiguo</mat-option>
             </mat-select>
           </mat-form-field>
         </div>
@@ -174,20 +180,25 @@ interface DateFilter {
                 (click)="$event.stopPropagation()"
                 class="tx-checkbox"
               ></mat-checkbox>
-              <div class="tx-icon" [style.background-color]="tx.category?.color || '#64748b'" (click)="openDialog(tx)">
+              <div class="tx-icon" [style.background-color]="tx.tags?.[0]?.color || '#64748b'" (click)="openDialog(tx)">
                 <mat-icon>{{ tx.type === 'income' ? 'arrow_downward' : 'arrow_upward' }}</mat-icon>
               </div>
               <div class="tx-content" (click)="openDialog(tx)">
                 <div class="tx-main">
-                  <span class="tx-description">{{ tx.description }}</span>
+                  <span class="tx-description">{{ tx.detail || tx.description }}</span>
                   <span class="tx-amount" [class.income]="tx.type === 'income'" [class.expense]="tx.type === 'expense'">
-                    {{ tx.type === 'expense' ? '-' : '+' }}{{ tx.amount | currency:'$':'symbol':'1.0-0' }}
+                    {{ tx.type === 'expense' ? '-' : '+' }}{{ tx.currency === 'USD' ? 'US$ ' : 'S/ ' }}{{ tx.amount | number:'1.2-2' }}
                   </span>
                 </div>
                 <div class="tx-meta">
-                  <span class="tx-category">
-                    <span class="category-dot" [style.background-color]="tx.category?.color || '#64748b'"></span>
-                    {{ tx.category?.name || 'Sin categoría' }}
+                  <span class="tx-tags">
+                    @if (tx.tags?.length) {
+                      @for (tag of tx.tags; track tag.id) {
+                        <span class="tag-badge" [style.background-color]="tag.color">{{ tag.name }}</span>
+                      }
+                    } @else {
+                      <span class="no-tags">Sin tags</span>
+                    }
                   </span>
                   <span class="tx-date">{{ formatDate(tx.date) }}</span>
                 </div>
@@ -299,7 +310,7 @@ interface DateFilter {
       align-items: center;
     }
 
-    .category-filter {
+    .tag-filter {
       min-width: 180px;
 
       ::ng-deep .mat-mdc-form-field-subscript-wrapper {
@@ -307,25 +318,24 @@ interface DateFilter {
       }
     }
 
-    .category-option {
+    .tag-option {
       display: flex;
       align-items: center;
       gap: 8px;
-
-      &.subcategory {
-        padding-left: 12px;
-        font-size: 0.9em;
-      }
     }
 
-    .cat-dot {
+    .tag-dot {
       width: 10px;
       height: 10px;
       border-radius: 50%;
     }
 
-    ::ng-deep .subcategory-option {
-      padding-left: 24px !important;
+    .filter-field {
+      min-width: 140px;
+
+      ::ng-deep .mat-mdc-form-field-subscript-wrapper {
+        display: none;
+      }
     }
 
     .active-filters-summary {
@@ -434,16 +444,25 @@ interface DateFilter {
       color: #64748b;
     }
 
-    .tx-category {
+    .tx-tags {
       display: flex;
       align-items: center;
       gap: 4px;
+      flex-wrap: wrap;
     }
 
-    .category-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
+    .tag-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 0.7rem;
+      color: white;
+      font-weight: 500;
+    }
+
+    .no-tags {
+      color: #94a3b8;
+      font-style: italic;
     }
 
     .tx-checkbox {
@@ -462,12 +481,14 @@ export class TransactionsComponent implements OnInit {
 
   loading = signal(true);
   transactions = signal<Transaction[]>([]);
-  categories = signal<Category[]>([]);
+  tags = signal<Tag[]>([]);
   selectedIds = signal<number[]>([]);
   selectedDateFilter = signal<string>('all');
 
   filterType = '';
-  filterCategory: number | null = null;
+  filterTags: number[] = [];
+  filterAccountType: string | null = null;
+  sortBy: 'amount_desc' | 'amount_asc' | 'date_desc' | 'date_asc' = 'date_desc';
   customStartDate: Date | null = null;
   customEndDate: Date | null = null;
 
@@ -528,39 +549,25 @@ export class TransactionsComponent implements OnInit {
     }
   ];
 
-  // Filter categories based on selected type
-  filteredCategories = computed(() => {
-    const cats = this.categories();
-    if (!this.filterType) return cats;
-    return cats.filter(c => c.type === this.filterType);
-  });
-
   hasActiveFilters = computed(() => {
     return this.filterType !== '' ||
-           this.filterCategory !== null ||
+           this.filterTags.length > 0 ||
            this.selectedDateFilter() !== 'all';
   });
 
   ngOnInit() {
-    this.loadCategories();
+    this.loadTags();
     this.loadTransactions();
   }
 
-  loadCategories() {
-    this.apiService.getCategories().subscribe({
-      next: (categories) => this.categories.set(categories)
+  loadTags() {
+    this.apiService.getTags().subscribe({
+      next: (tags) => this.tags.set(tags)
     });
   }
 
   onFilterChange(event: any) {
     this.filterType = event.value || '';
-    // Reset category filter if type changes and current category doesn't match
-    if (this.filterCategory) {
-      const cat = this.categories().find(c => c.id === this.filterCategory);
-      if (cat && cat.type !== this.filterType && this.filterType) {
-        this.filterCategory = null;
-      }
-    }
     this.loadTransactions();
   }
 
@@ -581,7 +588,8 @@ export class TransactionsComponent implements OnInit {
 
   clearAllFilters() {
     this.filterType = '';
-    this.filterCategory = null;
+    this.filterTags = [];
+    this.filterAccountType = null;
     this.selectedDateFilter.set('all');
     this.customStartDate = null;
     this.customEndDate = null;
@@ -593,7 +601,8 @@ export class TransactionsComponent implements OnInit {
     const filters: any = {};
 
     if (this.filterType) filters.type = this.filterType;
-    if (this.filterCategory) filters.category_id = this.filterCategory;
+    if (this.filterTags.length > 0) filters.tag_ids = this.filterTags.join(',');
+    if (this.filterAccountType) filters.account_type = this.filterAccountType;
 
     // Add date filters
     if (this.selectedDateFilter() !== 'all' && this.customStartDate && this.customEndDate) {
@@ -603,11 +612,32 @@ export class TransactionsComponent implements OnInit {
 
     this.apiService.getTransactions(filters).subscribe({
       next: (transactions) => {
-        this.transactions.set(transactions);
+        this.transactions.set(this.sortTransactions(transactions));
         this.loading.set(false);
       },
       error: () => this.loading.set(false)
     });
+  }
+
+  sortTransactions(transactions: Transaction[]): Transaction[] {
+    return [...transactions].sort((a, b) => {
+      switch (this.sortBy) {
+        case 'amount_desc':
+          return b.amount - a.amount;
+        case 'amount_asc':
+          return a.amount - b.amount;
+        case 'date_desc':
+          return new Date(b.date).getTime() - new Date(a.date).getTime();
+        case 'date_asc':
+          return new Date(a.date).getTime() - new Date(b.date).getTime();
+        default:
+          return b.amount - a.amount;
+      }
+    });
+  }
+
+  applySorting() {
+    this.transactions.set(this.sortTransactions(this.transactions()));
   }
 
   formatDateForApi(date: Date): string {
@@ -620,7 +650,7 @@ export class TransactionsComponent implements OnInit {
   openDialog(transaction?: Transaction) {
     const dialogRef = this.dialog.open(TransactionDialogComponent, {
       width: '400px',
-      data: { transaction, categories: this.categories() }
+      data: { transaction, tags: this.tags() }
     });
 
     dialogRef.afterClosed().subscribe(result => {

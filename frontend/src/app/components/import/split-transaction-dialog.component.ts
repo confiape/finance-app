@@ -7,17 +7,17 @@ import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
-import { Category, ParsedTransaction } from '../../models/models';
+import { Tag, ParsedTransaction } from '../../models/models';
 
 export interface SplitPart {
   amount: number;
-  category_id: number | null;
+  tag_ids: number[];
   details: string;
 }
 
 export interface SplitDialogData {
-  transaction: ParsedTransaction & { category_id?: number };
-  categories: Category[];
+  transaction: ParsedTransaction & { tag_ids?: number[] };
+  tags: Tag[];
 }
 
 export interface SplitDialogResult {
@@ -86,28 +86,16 @@ export interface SplitDialogResult {
                 <input matInput type="number" [(ngModel)]="part.amount" min="0" step="0.01" (ngModelChange)="updateParts()">
               </mat-form-field>
 
-              <mat-form-field appearance="outline" class="category-field">
-                <mat-label>Categoría</mat-label>
-                <mat-select [(ngModel)]="part.category_id">
-                  @for (cat of getCategoriesForType(); track cat.id) {
-                    @if (!cat.parent_id) {
-                      <mat-option [value]="cat.id">
-                        <span class="category-option">
-                          <span class="category-dot" [style.background-color]="cat.color"></span>
-                          {{ cat.name }}
-                        </span>
-                      </mat-option>
-                      @if (cat.subcategories?.length) {
-                        @for (sub of cat.subcategories; track sub.id) {
-                          <mat-option [value]="sub.id" class="subcategory-option">
-                            <span class="category-option subcategory">
-                              <span class="category-dot" [style.background-color]="sub.color"></span>
-                              {{ sub.name }}
-                            </span>
-                          </mat-option>
-                        }
-                      }
-                    }
+              <mat-form-field appearance="outline" class="tags-field">
+                <mat-label>Tags</mat-label>
+                <mat-select [(ngModel)]="part.tag_ids" multiple>
+                  @for (tag of data.tags; track tag.id) {
+                    <mat-option [value]="tag.id">
+                      <span class="tag-option">
+                        <span class="tag-dot" [style.background-color]="tag.color"></span>
+                        {{ tag.name }}
+                      </span>
+                    </mat-option>
                   }
                 </mat-select>
               </mat-form-field>
@@ -272,7 +260,7 @@ export interface SplitDialogResult {
       width: 140px;
     }
 
-    .category-field {
+    .tags-field {
       flex: 1;
     }
 
@@ -281,30 +269,21 @@ export interface SplitDialogResult {
     }
 
     ::ng-deep .amount-field .mat-mdc-form-field-subscript-wrapper,
-    ::ng-deep .category-field .mat-mdc-form-field-subscript-wrapper,
+    ::ng-deep .tags-field .mat-mdc-form-field-subscript-wrapper,
     ::ng-deep .details-field .mat-mdc-form-field-subscript-wrapper {
       display: none;
     }
 
-    .category-option {
+    .tag-option {
       display: flex;
       align-items: center;
       gap: 8px;
-
-      &.subcategory {
-        padding-left: 16px;
-        font-size: 0.9em;
-      }
     }
 
-    .category-dot {
+    .tag-dot {
       width: 10px;
       height: 10px;
       border-radius: 50%;
-    }
-
-    ::ng-deep .subcategory-option {
-      padding-left: 24px !important;
     }
 
     .add-part-btn {
@@ -335,8 +314,8 @@ export class SplitTransactionDialogComponent {
   data = inject<SplitDialogData>(MAT_DIALOG_DATA);
 
   parts = signal<SplitPart[]>([
-    { amount: 0, category_id: null, details: '' },
-    { amount: 0, category_id: null, details: '' }
+    { amount: 0, tag_ids: [], details: '' },
+    { amount: 0, tag_ids: [], details: '' }
   ]);
 
   totalSplit = computed(() => {
@@ -348,16 +327,12 @@ export class SplitTransactionDialogComponent {
   });
 
   ngOnInit() {
-    // Initialize with two parts, first one with the original category
-    const originalCategory = this.data.transaction.category_id || null;
+    // Initialize with two parts, first one with the original tags
+    const originalTagIds = this.data.transaction.tag_ids || [];
     this.parts.set([
-      { amount: this.data.transaction.amount, category_id: originalCategory, details: '' },
-      { amount: 0, category_id: null, details: '' }
+      { amount: this.data.transaction.amount, tag_ids: [...originalTagIds], details: '' },
+      { amount: 0, tag_ids: [], details: '' }
     ]);
-  }
-
-  getCategoriesForType(): Category[] {
-    return this.data.categories.filter(c => c.type === this.data.transaction.type);
   }
 
   isBalanced(): boolean {
@@ -365,11 +340,11 @@ export class SplitTransactionDialogComponent {
   }
 
   allPartsValid(): boolean {
-    return this.parts().every(part => part.amount > 0 && part.category_id !== null);
+    return this.parts().every(part => part.amount > 0);
   }
 
   addPart() {
-    this.parts.update(parts => [...parts, { amount: 0, category_id: null, details: '' }]);
+    this.parts.update(parts => [...parts, { amount: 0, tag_ids: [], details: '' }]);
   }
 
   removePart(index: number) {
@@ -388,11 +363,12 @@ export class SplitTransactionDialogComponent {
     const perPart = Math.floor((amount / count) * 100) / 100;
     const remainder = Math.round((amount - perPart * count) * 100) / 100;
 
+    const originalTagIds = this.data.transaction.tag_ids || [];
     const newParts: SplitPart[] = [];
     for (let i = 0; i < count; i++) {
       newParts.push({
         amount: i === 0 ? perPart + remainder : perPart,
-        category_id: i === 0 ? (this.data.transaction.category_id || null) : null,
+        tag_ids: i === 0 ? [...originalTagIds] : [],
         details: ''
       });
     }

@@ -1,5 +1,5 @@
 import { Component, inject, signal, OnInit, computed } from '@angular/core';
-import { CommonModule, CurrencyPipe, DatePipe } from '@angular/common';
+import { CommonModule, DatePipe, DecimalPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { MatCardModule } from '@angular/material/card';
@@ -12,19 +12,18 @@ import { MatDatepickerModule } from '@angular/material/datepicker';
 import { MatNativeDateModule } from '@angular/material/core';
 import { MatInputModule } from '@angular/material/input';
 import { MatDialogModule, MatDialog } from '@angular/material/dialog';
+import { MatSelectModule } from '@angular/material/select';
 import { ApiService } from '../../services/api.service';
-import { DashboardSummary, Transaction, CategorySummary, Category } from '../../models/models';
+import { DashboardSummary, Transaction, TagSummary, Tag } from '../../models/models';
 import { TransactionDetailDialogComponent } from '../transactions/transaction-detail-dialog.component';
 import { TransactionDialogComponent } from '../transactions/transaction-dialog.component';
+
+type SortOption = 'amount_desc' | 'amount_asc' | 'date_desc' | 'date_asc';
 
 interface DateFilter {
   label: string;
   value: string;
   getRange: () => { start: Date; end: Date };
-}
-
-interface CategorySummaryWithSubs extends CategorySummary {
-  subcategories?: CategorySummary[];
 }
 
 @Component({
@@ -44,8 +43,9 @@ interface CategorySummaryWithSubs extends CategorySummary {
     MatNativeDateModule,
     MatInputModule,
     MatDialogModule,
-    CurrencyPipe,
-    DatePipe
+    MatSelectModule,
+    DatePipe,
+    DecimalPipe
   ],
   template: `
     <div class="container">
@@ -87,6 +87,25 @@ interface CategorySummaryWithSubs extends CategorySummary {
               <mat-datepicker-toggle matIconSuffix [for]="endPicker"></mat-datepicker-toggle>
               <mat-datepicker #endPicker></mat-datepicker>
             </mat-form-field>
+
+            <mat-form-field appearance="outline" class="filter-field">
+              <mat-label>Tipo de cuenta</mat-label>
+              <mat-select [(ngModel)]="selectedAccountType" (selectionChange)="loadDashboard()">
+                <mat-option [value]="null">Todas</mat-option>
+                <mat-option value="debit">Débito</mat-option>
+                <mat-option value="credit">Crédito</mat-option>
+              </mat-select>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="filter-field">
+              <mat-label>Ordenar por</mat-label>
+              <mat-select [(ngModel)]="selectedSort" (selectionChange)="onSortChange()">
+                <mat-option value="amount_desc">Mayor monto</mat-option>
+                <mat-option value="amount_asc">Menor monto</mat-option>
+                <mat-option value="date_desc">Más reciente</mat-option>
+                <mat-option value="date_asc">Más antiguo</mat-option>
+              </mat-select>
+            </mat-form-field>
           </div>
         </div>
 
@@ -102,11 +121,11 @@ interface CategorySummaryWithSubs extends CategorySummary {
                 </button>
               </span>
             }
-            @if (selectedCategory()) {
-              <span class="filter-chip category" [style.border-color]="selectedCategory()!.color">
-                <span class="cat-dot" [style.background-color]="selectedCategory()!.color"></span>
-                {{ selectedCategory()!.category_name }}
-                <button class="remove-filter" (click)="clearCategoryFilter()">
+            @for (tagId of selectedTagIds(); track tagId) {
+              <span class="filter-chip tag" [style.border-color]="getTagById(tagId)?.color">
+                <span class="tag-dot" [style.background-color]="getTagById(tagId)?.color"></span>
+                {{ getTagById(tagId)?.tag_name }}
+                <button class="remove-filter" (click)="removeTagFromFilter(tagId)">
                   <mat-icon>close</mat-icon>
                 </button>
               </span>
@@ -160,93 +179,54 @@ interface CategorySummaryWithSubs extends CategorySummary {
           </mat-card>
         </div>
 
-        <!-- Category Breakdown -->
-        @if (displayedCategoriesWithSubs().length) {
+        <!-- Tag Breakdown -->
+        @if (displayedTags().length) {
           <mat-card class="section-card">
             <div class="section-header">
-              <h2>{{ selectedType() === 'income' ? 'Ingresos' : 'Gastos' }} por Categoría</h2>
-              @if (selectedCategory()) {
-                <button mat-button color="primary" (click)="clearCategoryFilter()">
-                  Ver todas
+              <h2>{{ selectedType() === 'income' ? 'Ingresos' : 'Gastos' }} por Tag</h2>
+              @if (selectedTagIds().length) {
+                <button mat-button color="primary" (click)="clearTagFilter()">
+                  Limpiar ({{ selectedTagIds().length }})
                 </button>
               }
             </div>
-            <div class="category-list">
-              @for (cat of visibleCategories(); track cat.category_id) {
-                <div class="category-wrapper">
-                  <div
-                    class="category-item"
-                    [class.selected]="selectedCategory()?.category_id === cat.category_id"
-                    [class.clickable]="true"
-                    [class.has-subs]="cat.subcategories?.length"
-                  >
-                    @if (cat.subcategories?.length) {
-                      <button class="expand-btn" (click)="toggleCategoryExpand(cat.category_id); $event.stopPropagation()">
-                        <mat-icon>{{ isCategoryExpanded(cat.category_id) ? 'expand_less' : 'expand_more' }}</mat-icon>
-                      </button>
-                    }
-                    <div class="category-main" (click)="toggleCategoryFilter(cat)">
-                      <div class="category-info">
-                        <span class="category-color" [style.background-color]="cat.color"></span>
-                        <span class="category-name">{{ cat.category_name }}</span>
-                        <span class="category-count">{{ cat.count }} mov.</span>
-                      </div>
-                      <div class="category-bar-container">
-                        <div class="category-bar" [style.width.%]="getPercentage(cat.total)" [style.background-color]="cat.color"></div>
-                      </div>
-                      <span class="category-amount" [class.income]="selectedType() === 'income'">
-                        {{ cat.total | currency:'S/':'symbol':'1.0-0' }}
+            <div class="tags-grid">
+              @for (tag of displayedTags(); track tag.tag_id + '-' + tag.type) {
+                <button
+                  class="tag-toggle"
+                  [class.selected]="isTagSelected(tag.tag_id)"
+                  [style.--tag-color]="tag.color"
+                  (click)="toggleTagFilter(tag)"
+                >
+                  <span class="tag-color-dot" [style.background-color]="tag.color"></span>
+                  <span class="tag-label">{{ tag.tag_name }}</span>
+                  <span class="tag-stats">
+                    @if (tag.total_pen > 0 && tag.total_usd > 0) {
+                      <span class="tag-amounts-multi">
+                        <span class="tag-amount-value" [class.income]="selectedType() === 'income'">
+                          S/ {{ tag.total_pen | number:'1.0-0' }}
+                        </span>
+                        <span class="tag-amount-value usd" [class.income]="selectedType() === 'income'">
+                          US$ {{ tag.total_usd | number:'1.0-0' }}
+                        </span>
                       </span>
-                      @if (selectedCategory()?.category_id === cat.category_id) {
-                        <mat-icon class="selected-cat-icon">check_circle</mat-icon>
-                      }
-                    </div>
-                  </div>
-
-                  <!-- Subcategories -->
-                  @if (cat.subcategories?.length && isCategoryExpanded(cat.category_id)) {
-                    <div class="subcategories-list">
-                      @for (sub of cat.subcategories; track sub.category_id) {
-                        <div
-                          class="category-item subcategory-item"
-                          [class.selected]="selectedCategory()?.category_id === sub.category_id"
-                          [class.clickable]="true"
-                          (click)="toggleCategoryFilter(sub)"
-                        >
-                          <div class="category-info">
-                            <span class="category-color" [style.background-color]="sub.color"></span>
-                            <span class="category-name">{{ sub.category_name }}</span>
-                            <span class="category-count">{{ sub.count }} mov.</span>
-                          </div>
-                          <div class="category-bar-container">
-                            <div class="category-bar" [style.width.%]="getPercentage(sub.total)" [style.background-color]="sub.color"></div>
-                          </div>
-                          <span class="category-amount" [class.income]="selectedType() === 'income'">
-                            {{ sub.total | currency:'S/':'symbol':'1.0-0' }}
-                          </span>
-                          @if (selectedCategory()?.category_id === sub.category_id) {
-                            <mat-icon class="selected-cat-icon">check_circle</mat-icon>
-                          }
-                        </div>
-                      }
-                    </div>
+                    } @else if (tag.total_usd > 0) {
+                      <span class="tag-amount-value" [class.income]="selectedType() === 'income'">
+                        US$ {{ tag.total_usd | number:'1.0-0' }}
+                      </span>
+                    } @else {
+                      <span class="tag-amount-value" [class.income]="selectedType() === 'income'">
+                        S/ {{ tag.total_pen | number:'1.0-0' }}
+                      </span>
+                    }
+                    <span class="tag-count-value">{{ tag.count }}</span>
+                  </span>
+                  @if (isTagSelected(tag.tag_id)) {
+                    <mat-icon class="check-icon">check</mat-icon>
                   }
-                </div>
+                </button>
               }
             </div>
-            @if (hasMoreCategories()) {
-              @if (showAllCategories()) {
-                <button mat-button color="primary" class="show-more-btn" (click)="toggleShowAllCategories()">
-                  <mat-icon>expand_less</mat-icon>
-                  Ver menos
-                </button>
-              } @else {
-                <button mat-button color="primary" class="show-more-btn" (click)="toggleShowAllCategories()">
-                  <mat-icon>expand_more</mat-icon>
-                  Ver más ({{ displayedCategoriesWithSubs().length - 3 }})
-                </button>
-              }
-            }
           </mat-card>
         }
 
@@ -254,8 +234,8 @@ interface CategorySummaryWithSubs extends CategorySummary {
         <mat-card class="section-card">
           <div class="section-header">
             <h2>
-              @if (selectedCategory()) {
-                Transacciones de {{ selectedCategory()!.category_name }}
+              @if (selectedTagIds().length) {
+                Transacciones filtradas
               } @else if (selectedType()) {
                 {{ selectedType() === 'income' ? 'Últimos Ingresos' : 'Últimos Gastos' }}
               } @else {
@@ -283,20 +263,23 @@ interface CategorySummaryWithSubs extends CategorySummary {
             <div class="transaction-list">
               @for (tx of filteredTransactions(); track tx.id) {
                 <div class="transaction-item clickable" (click)="openTransactionDetail(tx)">
-                  <div class="tx-icon" [style.background-color]="tx.category?.color || '#64748b'">
+                  <div class="tx-icon" [style.background-color]="tx.tags?.[0]?.color || '#64748b'">
                     <mat-icon>{{ tx.type === 'income' ? 'arrow_downward' : 'arrow_upward' }}</mat-icon>
                   </div>
                   <div class="tx-details">
-                    <span class="tx-description">{{ tx.description }}</span>
+                    <span class="tx-description">{{ tx.detail || tx.description }}</span>
                     <div class="tx-meta">
-                      <span class="tx-category">{{ tx.category?.name || 'Sin categoría' }}</span>
-                      @if (tx.detail) {
-                        <span class="tx-detail-text">• {{ tx.detail }}</span>
+                      @if (tx.tags?.length) {
+                        @for (tag of tx.tags; track tag.id) {
+                          <span class="tx-tag" [style.background-color]="tag.color">{{ tag.name }}</span>
+                        }
+                      } @else {
+                        <span class="tx-tag-empty">Sin tags</span>
                       }
                     </div>
                   </div>
                   <div class="tx-amount" [class.income]="tx.type === 'income'" [class.expense]="tx.type === 'expense'">
-                    {{ tx.type === 'expense' ? '-' : '+' }}{{ tx.amount | currency:'S/':'symbol':'1.0-0' }}
+                    {{ tx.type === 'expense' ? '-' : '+' }}{{ tx.currency === 'USD' ? 'US$ ' : 'S/ ' }}{{ tx.amount | number:'1.2-2' }}
                   </div>
                   <mat-icon class="tx-chevron">chevron_right</mat-icon>
                 </div>
@@ -366,13 +349,17 @@ interface CategorySummaryWithSubs extends CategorySummary {
       flex-wrap: wrap;
     }
 
-    .date-field {
+    .date-field, .filter-field {
       flex: 1;
       min-width: 140px;
 
       ::ng-deep .mat-mdc-form-field-subscript-wrapper {
         display: none;
       }
+    }
+
+    .filter-field {
+      min-width: 130px;
     }
 
     .active-filters {
@@ -410,12 +397,12 @@ interface CategorySummaryWithSubs extends CategorySummary {
         color: #991b1b;
       }
 
-      &.category {
+      &.tag {
         background: white;
         border: 2px solid;
       }
 
-      .cat-dot {
+      .tag-dot {
         width: 8px;
         height: 8px;
         border-radius: 50%;
@@ -545,157 +532,90 @@ interface CategorySummaryWithSubs extends CategorySummary {
       h2 { margin: 0; }
     }
 
-    .category-list {
+    .tags-grid {
       display: flex;
-      flex-direction: column;
+      flex-wrap: wrap;
       gap: 8px;
     }
 
-    .category-wrapper {
-      display: flex;
-      flex-direction: column;
-    }
-
-    .category-item {
+    .tag-toggle {
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 8px;
-      border-radius: 8px;
+      padding: 8px 12px;
+      border: 2px solid #e2e8f0;
+      border-radius: 20px;
+      background: white;
+      cursor: pointer;
       transition: all 0.2s;
-      position: relative;
+      font-family: inherit;
+      font-size: 0.9rem;
 
-      &.has-subs {
-        padding-left: 0;
-      }
-
-      &.clickable {
-        cursor: pointer;
-
-        &:hover {
-          background: #f8fafc;
-        }
+      &:hover {
+        border-color: var(--tag-color, #6366f1);
+        background: #fafafa;
       }
 
       &.selected {
-        background: #eef2ff;
-        outline: 2px solid #6366f1;
+        border-color: var(--tag-color, #6366f1);
+        background: color-mix(in srgb, var(--tag-color, #6366f1) 10%, white);
       }
 
-      .selected-cat-icon {
-        position: absolute;
-        right: 8px;
-        top: 50%;
-        transform: translateY(-50%);
-        color: #6366f1;
-        font-size: 20px;
-        width: 20px;
-        height: 20px;
-      }
-    }
-
-    .expand-btn {
-      background: none;
-      border: none;
-      padding: 4px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      border-radius: 4px;
-      color: #64748b;
-
-      &:hover {
-        background: #e2e8f0;
+      .tag-color-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        flex-shrink: 0;
       }
 
-      mat-icon {
-        font-size: 20px;
-        width: 20px;
-        height: 20px;
-      }
-    }
-
-    .category-main {
-      flex: 1;
-      display: grid;
-      grid-template-columns: 1fr auto auto;
-      gap: 8px;
-      align-items: center;
-      padding: 4px 8px;
-      border-radius: 6px;
-      position: relative;
-
-      &:hover {
-        background: #f8fafc;
-      }
-    }
-
-    .subcategories-list {
-      margin-left: 32px;
-      padding-left: 12px;
-      border-left: 2px solid #e2e8f0;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      margin-top: 4px;
-    }
-
-    .subcategory-item {
-      padding: 6px 8px;
-      font-size: 0.9rem;
-
-      .category-name {
-        font-weight: 400;
+      .tag-label {
+        font-weight: 500;
+        color: #1e293b;
       }
 
-      .category-amount {
-        font-size: 0.9rem;
+      .tag-stats {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-left: 4px;
       }
-    }
 
-    .category-info {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
+      .tag-amounts-multi {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 2px;
+      }
 
-    .category-color {
-      width: 12px;
-      height: 12px;
-      border-radius: 50%;
-    }
+      .tag-amount-value {
+        font-weight: 600;
+        color: #ef4444;
+        font-size: 0.85rem;
 
-    .category-name {
-      font-weight: 500;
-    }
+        &.income {
+          color: #22c55e;
+        }
 
-    .category-count {
-      font-size: 0.75rem;
-      color: #64748b;
-    }
+        &.usd {
+          font-size: 0.75rem;
+          opacity: 0.8;
+        }
+      }
 
-    .category-bar-container {
-      grid-column: 1 / 2;
-      height: 6px;
-      background: #e2e8f0;
-      border-radius: 3px;
-      overflow: hidden;
-    }
+      .tag-count-value {
+        font-size: 0.75rem;
+        color: #94a3b8;
+        background: #f1f5f9;
+        padding: 2px 6px;
+        border-radius: 10px;
+      }
 
-    .category-bar {
-      height: 100%;
-      border-radius: 3px;
-      transition: width 0.3s ease;
-    }
-
-    .category-amount {
-      font-weight: 600;
-      color: #ef4444;
-      padding-right: 24px;
-
-      &.income {
-        color: #22c55e;
+      .check-icon {
+        font-size: 16px;
+        width: 16px;
+        height: 16px;
+        color: var(--tag-color, #6366f1);
+        margin-left: -4px;
       }
     }
 
@@ -802,15 +722,17 @@ interface CategorySummaryWithSubs extends CategorySummary {
         flex-wrap: wrap;
       }
 
-      .tx-category {
-        font-size: 0.75rem;
-        color: #64748b;
+      .tx-tag {
+        font-size: 0.7rem;
+        padding: 2px 8px;
+        border-radius: 10px;
+        color: white;
+        font-weight: 500;
       }
 
-      .tx-detail-text {
+      .tx-tag-empty {
         font-size: 0.75rem;
-        color: #6366f1;
-        font-style: italic;
+        color: #94a3b8;
       }
     }
 
@@ -841,15 +763,15 @@ export class DashboardComponent implements OnInit {
   loading = signal(true);
   data = signal<DashboardSummary | null>(null);
   allTransactions = signal<Transaction[]>([]);
-  allCategories = signal<Category[]>([]);
+  allTags = signal<Tag[]>([]);
   maxExpense = signal(0);
-  expandedCategories = signal<Set<number>>(new Set());
-  showAllCategories = signal(false);
 
   // Filter state
   selectedDateFilter = signal<string>('month');
   selectedType = signal<'income' | 'expense' | null>(null);
-  selectedCategory = signal<CategorySummary | null>(null);
+  selectedTagIds = signal<number[]>([]);
+  selectedAccountType: string | null = null;
+  selectedSort: SortOption = 'date_desc';
 
   // Custom date range
   customStartDate: Date | null = null;
@@ -914,153 +836,63 @@ export class DashboardComponent implements OnInit {
 
   // Computed values for displayed data
   displayedIncome = computed(() => {
-    if (this.selectedCategory()) {
-      return this.selectedCategory()!.type === 'income' ? this.selectedCategory()!.total : 0;
+    const selectedIds = this.selectedTagIds();
+    if (selectedIds.length) {
+      const tags = this.data()?.by_tag || [];
+      return tags
+        .filter(t => t.type === 'income' && selectedIds.includes(t.tag_id))
+        .reduce((sum, t) => sum + t.total, 0);
     }
     return this.data()?.total_income ?? 0;
   });
 
   displayedExpense = computed(() => {
-    if (this.selectedCategory()) {
-      return this.selectedCategory()!.type === 'expense' ? this.selectedCategory()!.total : 0;
+    const selectedIds = this.selectedTagIds();
+    if (selectedIds.length) {
+      const tags = this.data()?.by_tag || [];
+      return tags
+        .filter(t => t.type === 'expense' && selectedIds.includes(t.tag_id))
+        .reduce((sum, t) => sum + t.total, 0);
     }
     return this.data()?.total_expense ?? 0;
   });
 
   displayedBalance = computed(() => {
-    if (this.selectedCategory()) {
-      const cat = this.selectedCategory()!;
-      return cat.type === 'income' ? cat.total : -cat.total;
+    const selectedIds = this.selectedTagIds();
+    if (selectedIds.length) {
+      return this.displayedIncome() - this.displayedExpense();
     }
     return this.data()?.balance ?? 0;
   });
 
-  displayedCategories = computed(() => {
+  displayedTags = computed(() => {
     const type = this.selectedType() || 'expense';
-    const categories = this.data()?.by_category || [];
-    return categories.filter(c => c.type === type);
-  });
-
-  displayedCategoriesWithSubs = computed((): CategorySummaryWithSubs[] => {
-    const type = this.selectedType() || 'expense';
-    const categorySummaries = this.data()?.by_category || [];
-    const categories = this.allCategories();
-
-    // Create a map of category id -> category info (to know which are parents/children)
-    const categoryMap = new Map<number, Category>();
-    for (const cat of categories) {
-      categoryMap.set(cat.id, cat);
-    }
-
-    // Separate parent summaries from subcategory summaries
-    const parentSummaries: CategorySummaryWithSubs[] = [];
-    const subcategorySummaries: CategorySummary[] = [];
-
-    for (const cs of categorySummaries) {
-      if (cs.type !== type) continue;
-
-      const catInfo = categoryMap.get(cs.category_id);
-      if (!catInfo) continue;
-
-      if (catInfo.parent_id) {
-        // This is a subcategory
-        subcategorySummaries.push(cs);
-      } else {
-        // This is a parent category
-        parentSummaries.push({ ...cs, subcategories: undefined });
-      }
-    }
-
-    // Now attach subcategories to their parents
-    for (const subSummary of subcategorySummaries) {
-      const catInfo = categoryMap.get(subSummary.category_id);
-      if (!catInfo?.parent_id) continue;
-
-      // Find the parent in our results
-      const parentResult = parentSummaries.find(p => p.category_id === catInfo.parent_id);
-      if (parentResult) {
-        if (!parentResult.subcategories) {
-          parentResult.subcategories = [];
-        }
-        parentResult.subcategories.push(subSummary);
-      }
-    }
-
-    // Also include parent categories that have no transactions but have subcategories with transactions
-    for (const subSummary of subcategorySummaries) {
-      const catInfo = categoryMap.get(subSummary.category_id);
-      if (!catInfo?.parent_id) continue;
-
-      const parentExists = parentSummaries.find(p => p.category_id === catInfo.parent_id);
-      if (!parentExists) {
-        // Create a parent entry with zero total
-        const parentCat = categoryMap.get(catInfo.parent_id);
-        if (parentCat) {
-          const newParent: CategorySummaryWithSubs = {
-            category_id: parentCat.id,
-            category_name: parentCat.name,
-            color: parentCat.color,
-            type: parentCat.type,
-            total: 0,
-            count: 0,
-            subcategories: [subSummary]
-          };
-          parentSummaries.push(newParent);
-        }
-      }
-    }
-
-    // Update parent totals to include subcategories
-    for (const parent of parentSummaries) {
-      if (parent.subcategories?.length) {
-        const subsTotal = parent.subcategories.reduce((sum, s) => sum + s.total, 0);
-        const subsCount = parent.subcategories.reduce((sum, s) => sum + s.count, 0);
-        parent.total += subsTotal;
-        parent.count += subsCount;
-      }
-    }
-
-    // Sort by total descending
-    parentSummaries.sort((a, b) => b.total - a.total);
-
-    return parentSummaries;
-  });
-
-  visibleCategories = computed(() => {
-    const all = this.displayedCategoriesWithSubs();
-    if (this.showAllCategories() || all.length <= 3) {
-      return all;
-    }
-    return all.slice(0, 3);
-  });
-
-  hasMoreCategories = computed(() => {
-    return this.displayedCategoriesWithSubs().length > 3;
+    const tags = this.data()?.by_tag || [];
+    return tags.filter(t => t.type === type);
   });
 
   filteredTransactions = computed(() => {
-    let transactions = this.allTransactions();
+    let transactions = [...this.allTransactions()];
 
     if (this.selectedType()) {
       transactions = transactions.filter(t => t.type === this.selectedType());
     }
 
-    if (this.selectedCategory()) {
-      const selectedCatId = this.selectedCategory()!.category_id;
-      // Get subcategory IDs (categories where parent_id equals the selected category)
-      const subcategoryIds = this.allCategories()
-        .filter(c => c.parent_id === selectedCatId)
-        .map(c => c.id);
-      const categoryIds = [selectedCatId, ...subcategoryIds];
-
-      transactions = transactions.filter(t => t.category_id && categoryIds.includes(t.category_id));
+    const selectedIds = this.selectedTagIds();
+    if (selectedIds.length) {
+      transactions = transactions.filter(t =>
+        t.tags?.some(tag => selectedIds.includes(tag.id))
+      );
     }
+
+    // Apply sorting
+    transactions = this.sortTransactions(transactions);
 
     return transactions.slice(0, 10);
   });
 
   hasActiveFilters = computed(() => {
-    return this.selectedType() !== null || this.selectedCategory() !== null;
+    return this.selectedType() !== null || this.selectedTagIds().length > 0;
   });
 
   ngOnInit() {
@@ -1088,29 +920,30 @@ export class DashboardComponent implements OnInit {
     const startDate = this.customStartDate ? this.formatDate(this.customStartDate) : undefined;
     const endDate = this.customEndDate ? this.formatDate(this.customEndDate) : undefined;
 
-    // Load categories for subcategory structure (flat mode to get parent_id for each category)
-    this.apiService.getCategoriesFlat().subscribe({
-      next: (categories) => this.allCategories.set(categories)
+    // Load tags for reference
+    this.apiService.getTags().subscribe({
+      next: (tags) => this.allTags.set(tags)
     });
 
     // Load dashboard summary and transactions in parallel
-    this.apiService.getDashboard(startDate, endDate).subscribe({
+    this.apiService.getDashboard(startDate, endDate, this.selectedAccountType || undefined).subscribe({
       next: (data) => {
         this.data.set(data);
         const currentType = this.selectedType() || 'expense';
-        const categories = data.by_category.filter(c => c.type === currentType);
-        if (categories.length) {
-          this.maxExpense.set(Math.max(...categories.map(c => c.total)));
+        const tags = data.by_tag.filter(t => t.type === currentType);
+        if (tags.length) {
+          this.maxExpense.set(Math.max(...tags.map(t => t.total)));
         }
       }
     });
 
     this.apiService.getTransactions({
       start_date: startDate,
-      end_date: endDate
+      end_date: endDate,
+      account_type: this.selectedAccountType || undefined
     }).subscribe({
       next: (transactions) => {
-        this.allTransactions.set(transactions);
+        this.allTransactions.set(this.sortTransactions(transactions));
         this.loading.set(false);
       },
       error: () => {
@@ -1124,42 +957,59 @@ export class DashboardComponent implements OnInit {
       this.selectedType.set(null);
     } else {
       this.selectedType.set(type);
-      // Clear category filter when changing type
-      this.selectedCategory.set(null);
+      // Clear tag filter when changing type
+      this.selectedTagIds.set([]);
     }
-    this.showAllCategories.set(false);
     this.updateMaxExpense();
   }
 
-  toggleCategoryFilter(category: CategorySummary) {
-    if (this.selectedCategory()?.category_id === category.category_id) {
-      this.selectedCategory.set(null);
+  toggleTagFilter(tag: TagSummary) {
+    const currentIds = this.selectedTagIds();
+    if (currentIds.includes(tag.tag_id)) {
+      this.selectedTagIds.set(currentIds.filter(id => id !== tag.tag_id));
     } else {
-      this.selectedCategory.set(category);
+      this.selectedTagIds.set([...currentIds, tag.tag_id]);
     }
+  }
+
+  isTagSelected(tagId: number): boolean {
+    return this.selectedTagIds().includes(tagId);
+  }
+
+  getTagById(tagId: number): TagSummary | undefined {
+    const type = this.selectedType() || 'expense';
+    // First try to find the tag matching the current type
+    const tagWithType = this.data()?.by_tag.find(t => t.tag_id === tagId && t.type === type);
+    if (tagWithType) return tagWithType;
+    // Fallback to any tag with this ID
+    return this.data()?.by_tag.find(t => t.tag_id === tagId);
+  }
+
+  removeTagFromFilter(tagId: number) {
+    this.selectedTagIds.set(this.selectedTagIds().filter(id => id !== tagId));
   }
 
   clearTypeFilter() {
     this.selectedType.set(null);
-    this.selectedCategory.set(null);
+    this.selectedTagIds.set([]);
     this.updateMaxExpense();
   }
 
-  clearCategoryFilter() {
-    this.selectedCategory.set(null);
+  clearTagFilter() {
+    this.selectedTagIds.set([]);
   }
 
   clearAllFilters() {
     this.selectedType.set(null);
-    this.selectedCategory.set(null);
+    this.selectedTagIds.set([]);
     this.updateMaxExpense();
   }
 
   updateMaxExpense() {
     const type = this.selectedType() || 'expense';
-    const categories = this.data()?.by_category.filter(c => c.type === type) || [];
-    if (categories.length) {
-      this.maxExpense.set(Math.max(...categories.map(c => c.total)));
+    const tags = this.data()?.by_tag.filter(t => t.type === type) || [];
+    if (tags.length) {
+      this.maxExpense.set(Math.max(...tags.map(t => t.total)));
     } else {
       this.maxExpense.set(0);
     }
@@ -1170,30 +1020,34 @@ export class DashboardComponent implements OnInit {
     return (amount / this.maxExpense()) * 100;
   }
 
+  // Sorting
+  sortTransactions(transactions: Transaction[]): Transaction[] {
+    return transactions.sort((a, b) => {
+      switch (this.selectedSort) {
+        case 'amount_desc':
+          return b.amount - a.amount;
+        case 'amount_asc':
+          return a.amount - b.amount;
+        case 'date_desc':
+          return new Date(b.date).getTime() - new Date(a.date).getTime();
+        case 'date_asc':
+          return new Date(a.date).getTime() - new Date(b.date).getTime();
+        default:
+          return b.amount - a.amount;
+      }
+    });
+  }
+
+  onSortChange() {
+    // Force recompute of filteredTransactions by triggering a signal update
+    this.allTransactions.set([...this.allTransactions()]);
+  }
+
   formatDate(date: Date): string {
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
-  }
-
-  // Category expand/collapse
-  toggleCategoryExpand(categoryId: number) {
-    const expanded = new Set(this.expandedCategories());
-    if (expanded.has(categoryId)) {
-      expanded.delete(categoryId);
-    } else {
-      expanded.add(categoryId);
-    }
-    this.expandedCategories.set(expanded);
-  }
-
-  toggleShowAllCategories() {
-    this.showAllCategories.set(!this.showAllCategories());
-  }
-
-  isCategoryExpanded(categoryId: number): boolean {
-    return this.expandedCategories().has(categoryId);
   }
 
   // Transaction detail dialog
@@ -1213,7 +1067,7 @@ export class DashboardComponent implements OnInit {
   openEditDialog(transaction: Transaction) {
     const dialogRef = this.dialog.open(TransactionDialogComponent, {
       width: '400px',
-      data: { transaction, categories: this.allCategories() }
+      data: { transaction, tags: this.allTags() }
     });
 
     dialogRef.afterClosed().subscribe(result => {
