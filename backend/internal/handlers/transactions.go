@@ -360,3 +360,135 @@ func DeleteTransactionsBatch(c *gin.Context) {
 		"deleted": rowsAffected,
 	})
 }
+
+// LinkTransactions links two transactions together (expense + reimbursement)
+func LinkTransactions(c *gin.Context) {
+	userID := c.GetInt("user_id")
+
+	var req struct {
+		TransactionID1 int `json:"transaction_id_1" binding:"required"`
+		TransactionID2 int `json:"transaction_id_2" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Both transaction IDs are required"})
+		return
+	}
+
+	if req.TransactionID1 == req.TransactionID2 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot link a transaction to itself"})
+		return
+	}
+
+	// Verify both transactions belong to user and get their types
+	var tx1Type, tx2Type string
+	var tx1Linked, tx2Linked *int
+
+	err := database.DB.QueryRow(`
+		SELECT type, linked_to FROM transactions WHERE id = $1 AND user_id = $2
+	`, req.TransactionID1, userID).Scan(&tx1Type, &tx1Linked)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Transaction 1 not found"})
+		return
+	}
+
+	err = database.DB.QueryRow(`
+		SELECT type, linked_to FROM transactions WHERE id = $1 AND user_id = $2
+	`, req.TransactionID2, userID).Scan(&tx2Type, &tx2Linked)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Transaction 2 not found"})
+		return
+	}
+
+	// Check if either is already linked
+	if tx1Linked != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Transaction 1 is already linked to another transaction"})
+		return
+	}
+	if tx2Linked != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Transaction 2 is already linked to another transaction"})
+		return
+	}
+
+	// Check that they are different types (expense + income)
+	if tx1Type == tx2Type {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot link two transactions of the same type. One must be expense, one must be income."})
+		return
+	}
+
+	// Link them bidirectionally
+	tx, err := database.DB.Begin()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error starting transaction"})
+		return
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(`UPDATE transactions SET linked_to = $1 WHERE id = $2`, req.TransactionID2, req.TransactionID1)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error linking transactions"})
+		return
+	}
+
+	_, err = tx.Exec(`UPDATE transactions SET linked_to = $1 WHERE id = $2`, req.TransactionID1, req.TransactionID2)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error linking transactions"})
+		return
+	}
+
+	if err = tx.Commit(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error committing transaction"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Transactions linked successfully"})
+}
+
+// UnlinkTransaction removes the link between two transactions
+func UnlinkTransaction(c *gin.Context) {
+	userID := c.GetInt("user_id")
+	txID := c.Param("id")
+
+	// Get the linked transaction ID
+	var linkedTo *int
+	err := database.DB.QueryRow(`
+		SELECT linked_to FROM transactions WHERE id = $1 AND user_id = $2
+	`, txID, userID).Scan(&linkedTo)
+
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Transaction not found"})
+		return
+	}
+
+	if linkedTo == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Transaction is not linked"})
+		return
+	}
+
+	// Unlink both sides
+	tx, err := database.DB.Begin()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error starting transaction"})
+		return
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(`UPDATE transactions SET linked_to = NULL WHERE id = $1`, txID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error unlinking transaction"})
+		return
+	}
+
+	_, err = tx.Exec(`UPDATE transactions SET linked_to = NULL WHERE id = $1`, *linkedTo)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error unlinking transaction"})
+		return
+	}
+
+	if err = tx.Commit(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error committing transaction"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Transaction unlinked successfully"})
+}

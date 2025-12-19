@@ -45,6 +45,11 @@ export class AuthService {
       .pipe(tap(response => this.handleAuth(response)));
   }
 
+  googleLogin(credential: string) {
+    return this.http.post<AuthResponse>(`${environment.apiUrl}/auth/google`, { credential })
+      .pipe(tap(response => this.handleAuth(response)));
+  }
+
   private handleAuth(response: AuthResponse) {
     localStorage.setItem('token', response.token);
     localStorage.setItem('user', JSON.stringify(response.user));

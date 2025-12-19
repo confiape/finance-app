@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"log"
 	"net/http"
 	"time"
 
@@ -17,6 +18,7 @@ func GetDashboard(c *gin.Context) {
 	startDate := c.Query("start_date")
 	endDate := c.Query("end_date")
 	accountType := c.Query("account_type")
+	includeLinked := c.Query("include_linked") == "true" // Default: false (show net amounts)
 
 	if startDate == "" {
 		now := time.Now()
@@ -34,20 +36,65 @@ func GetDashboard(c *gin.Context) {
 		accountTypeFilter = " AND a.account_type = '" + accountType + "'"
 	}
 
-	// Get totals
-	totalsQuery := `
-		SELECT
-			COALESCE(SUM(CASE WHEN t.type = 'income' THEN t.amount ELSE 0 END), 0) as total_income,
-			COALESCE(SUM(CASE WHEN t.type = 'expense' THEN t.amount ELSE 0 END), 0) as total_expense,
-			COUNT(*) as transaction_count
-		FROM transactions t
-		LEFT JOIN accounts a ON t.account_id = a.id
-		WHERE t.user_id = $1 AND t.date BETWEEN $2 AND $3` + accountTypeFilter
+	// Build linked filter - when not including linked, we calculate net amounts
+	// For linked transactions: we only count the difference (expense - reimbursement)
+	// We process linked pairs by only counting the expense side with adjusted amount
+	var totalsQuery string
+	if includeLinked {
+		// Show all transactions at full value
+		totalsQuery = `
+			SELECT
+				COALESCE(SUM(CASE WHEN t.type = 'income' THEN t.amount ELSE 0 END), 0) as total_income,
+				COALESCE(SUM(CASE WHEN t.type = 'expense' THEN t.amount ELSE 0 END), 0) as total_expense,
+				COUNT(*) as transaction_count
+			FROM transactions t
+			LEFT JOIN accounts a ON t.account_id = a.id
+			WHERE t.user_id = $1 AND t.date BETWEEN $2 AND $3` + accountTypeFilter
+	} else {
+		// Show net amounts for linked transactions
+		// For unlinked: count normally
+		// For linked pairs: only count the net difference (expense - income)
+		// We handle this by: unlinked transactions + (expense amount - linked income amount) for linked pairs
+		totalsQuery = `
+			WITH linked_pairs AS (
+				-- Get all linked expense transactions with their reimbursement
+				SELECT
+					e.id as expense_id,
+					e.amount as expense_amount,
+					i.amount as income_amount,
+					e.currency as currency,
+					GREATEST(e.amount - i.amount, 0) as net_expense,
+					GREATEST(i.amount - e.amount, 0) as net_income
+				FROM transactions e
+				JOIN transactions i ON e.linked_to = i.id
+				WHERE e.user_id = $1
+				  AND e.type = 'expense'
+				  AND i.type = 'income'
+				  AND e.date BETWEEN $2 AND $3
+			),
+			unlinked AS (
+				-- Get unlinked transactions
+				SELECT t.type, t.amount
+				FROM transactions t
+				LEFT JOIN accounts a ON t.account_id = a.id
+				WHERE t.user_id = $1
+				  AND t.date BETWEEN $2 AND $3
+				  AND t.linked_to IS NULL` + accountTypeFilter + `
+			)
+			SELECT
+				COALESCE((SELECT SUM(amount) FROM unlinked WHERE type = 'income'), 0) +
+				COALESCE((SELECT SUM(net_income) FROM linked_pairs), 0) as total_income,
+				COALESCE((SELECT SUM(amount) FROM unlinked WHERE type = 'expense'), 0) +
+				COALESCE((SELECT SUM(net_expense) FROM linked_pairs), 0) as total_expense,
+				(SELECT COUNT(*) FROM unlinked) +
+				(SELECT COUNT(*) FROM linked_pairs WHERE net_expense > 0 OR net_income > 0) as transaction_count`
+	}
 
 	err := database.DB.QueryRow(totalsQuery, userID, startDate, endDate).Scan(&summary.TotalIncome, &summary.TotalExpense, &summary.TransactionCount)
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error fetching summary"})
+		log.Printf("Error fetching dashboard summary: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error fetching summary", "details": err.Error()})
 		return
 	}
 
@@ -55,6 +102,12 @@ func GetDashboard(c *gin.Context) {
 
 	// Get breakdown by tag - group by tag AND type so each tag can appear once per transaction type
 	// Also calculate totals by currency (PEN and USD)
+	// When not including linked, exclude fully linked transactions from tag summary
+	linkedFilter := ""
+	if !includeLinked {
+		linkedFilter = " AND t.linked_to IS NULL"
+	}
+
 	tagQuery := `
 		SELECT
 			tg.id, tg.name, tg.color,
@@ -67,14 +120,15 @@ func GetDashboard(c *gin.Context) {
 		JOIN transaction_tags tt ON tg.id = tt.tag_id
 		JOIN transactions t ON tt.transaction_id = t.id
 		LEFT JOIN accounts a ON t.account_id = a.id
-		WHERE tg.user_id = $1 AND t.date BETWEEN $2 AND $3` + accountTypeFilter + `
+		WHERE tg.user_id = $1 AND t.date BETWEEN $2 AND $3` + accountTypeFilter + linkedFilter + `
 		GROUP BY tg.id, tg.name, tg.color, t.type
 		HAVING COUNT(DISTINCT t.id) > 0
 		ORDER BY total DESC`
 	rows, err := database.DB.Query(tagQuery, userID, startDate, endDate)
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error fetching tag summary"})
+		log.Printf("Error fetching tag summary: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error fetching tag summary", "details": err.Error()})
 		return
 	}
 	defer rows.Close()
@@ -91,19 +145,20 @@ func GetDashboard(c *gin.Context) {
 		summary.ByTag = []models.TagSummary{}
 	}
 
-	// Get recent transactions
+	// Get recent transactions (when not including linked, filter them out)
 	recentQuery := `
 		SELECT t.id, t.user_id, t.description, t.detail, t.amount, t.currency, t.type,
-		       t.date, t.source, t.created_at, t.updated_at
+		       t.date, t.source, t.linked_to, t.created_at, t.updated_at
 		FROM transactions t
 		LEFT JOIN accounts a ON t.account_id = a.id
-		WHERE t.user_id = $1 AND t.date BETWEEN $2 AND $3` + accountTypeFilter + `
+		WHERE t.user_id = $1 AND t.date BETWEEN $2 AND $3` + accountTypeFilter + linkedFilter + `
 		ORDER BY t.date DESC, t.created_at DESC
 		LIMIT 10`
 	recentRows, err := database.DB.Query(recentQuery, userID, startDate, endDate)
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error fetching recent transactions"})
+		log.Printf("Error fetching recent transactions: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error fetching recent transactions", "details": err.Error()})
 		return
 	}
 	defer recentRows.Close()
@@ -113,7 +168,7 @@ func GetDashboard(c *gin.Context) {
 		var t models.Transaction
 		if err := recentRows.Scan(
 			&t.ID, &t.UserID, &t.Description, &t.Detail, &t.Amount, &t.Currency, &t.Type,
-			&t.Date, &t.Source, &t.CreatedAt, &t.UpdatedAt,
+			&t.Date, &t.Source, &t.LinkedTo, &t.CreatedAt, &t.UpdatedAt,
 		); err != nil {
 			continue
 		}

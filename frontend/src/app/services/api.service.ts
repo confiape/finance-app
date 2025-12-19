@@ -89,6 +89,17 @@ export class ApiService {
     });
   }
 
+  linkTransactions(transactionId1: number, transactionId2: number): Observable<{ message: string }> {
+    return this.http.post<{ message: string }>(`${this.apiUrl}/transactions/link`, {
+      transaction_id_1: transactionId1,
+      transaction_id_2: transactionId2
+    });
+  }
+
+  unlinkTransaction(transactionId: number): Observable<{ message: string }> {
+    return this.http.delete<{ message: string }>(`${this.apiUrl}/transactions/${transactionId}/link`);
+  }
+
   // Accounts
   getAccounts(): Observable<Account[]> {
     return this.http.get<Account[]>(`${this.apiUrl}/accounts`);
@@ -115,11 +126,12 @@ export class ApiService {
   }
 
   // Dashboard
-  getDashboard(startDate?: string, endDate?: string, accountType?: string): Observable<DashboardSummary> {
+  getDashboard(startDate?: string, endDate?: string, accountType?: string, includeLinked?: boolean): Observable<DashboardSummary> {
     let params = new HttpParams();
     if (startDate) params = params.set('start_date', startDate);
     if (endDate) params = params.set('end_date', endDate);
     if (accountType) params = params.set('account_type', accountType);
+    if (includeLinked) params = params.set('include_linked', 'true');
     return this.http.get<DashboardSummary>(`${this.apiUrl}/dashboard`, { params });
   }
 

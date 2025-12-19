@@ -964,19 +964,20 @@ export class ImportComponent implements OnInit {
       next: (response) => {
         this.importId.set(response.import_id);
 
-        // Apply suggested tags automatically
-        const transactionsWithTags = response.transactions.map((tx: any) => ({
+        // Apply suggested tags and detail automatically from previous transactions
+        const transactionsWithSuggestions = response.transactions.map((tx: any) => ({
           ...tx,
-          tag_ids: tx.suggested_tag_ids || tx.tag_ids || []
+          tag_ids: tx.suggested_tag_ids || tx.tag_ids || [],
+          detail: tx.detail || tx.suggested_detail || null
         }));
 
         // Sort: new transactions first, then duplicates
-        transactionsWithTags.sort((a: any, b: any) => {
+        transactionsWithSuggestions.sort((a: any, b: any) => {
           if (a.is_duplicate === b.is_duplicate) return 0;
           return a.is_duplicate ? 1 : -1;
         });
 
-        this.parsedTransactions.set(transactionsWithTags);
+        this.parsedTransactions.set(transactionsWithSuggestions);
         this.uploading.set(false);
 
         if (response.transactions.length === 0) {

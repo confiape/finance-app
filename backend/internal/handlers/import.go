@@ -4,22 +4,26 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/lib/pq"
 	"github.com/warren/finance-app/internal/database"
 	"github.com/warren/finance-app/internal/services"
 )
 
 // TransactionWithSuggestion includes parsed transaction with tag suggestions
 type TransactionWithSuggestion struct {
-	Description      string `json:"description"`
+	Description      string  `json:"description"`
+	Detail           *string `json:"detail"`
 	Amount           float64 `json:"amount"`
 	Currency         string  `json:"currency"`
 	Type             string  `json:"type"`
 	Date             string  `json:"date"`
 	RawText          string  `json:"raw_text"`
 	SuggestedTagIDs  []int   `json:"suggested_tag_ids"`
+	SuggestedDetail  *string `json:"suggested_detail"`
 	IsDuplicate      bool    `json:"is_duplicate"`
 	ExistingTagIDs   []int   `json:"existing_tag_ids"`
 }
@@ -131,13 +135,20 @@ func UploadFile(c *gin.Context) {
 	})
 }
 
-// enhanceTransactionsWithSuggestions checks for duplicates and suggests tags
+// enhanceTransactionsWithSuggestions checks for duplicates and suggests tags/details
+// Optimized version: uses batch queries instead of per-transaction queries
 func enhanceTransactionsWithSuggestions(userID int, transactions []services.ParsedTransaction) []TransactionWithSuggestion {
-	result := make([]TransactionWithSuggestion, 0, len(transactions))
+	if len(transactions) == 0 {
+		return []TransactionWithSuggestion{}
+	}
 
-	for _, tx := range transactions {
-		enhanced := TransactionWithSuggestion{
+	result := make([]TransactionWithSuggestion, len(transactions))
+
+	// Initialize all transactions
+	for i, tx := range transactions {
+		result[i] = TransactionWithSuggestion{
 			Description:     tx.Description,
+			Detail:          nil,
 			Amount:          tx.Amount,
 			Currency:        tx.Currency,
 			Type:            tx.Type,
@@ -145,81 +156,177 @@ func enhanceTransactionsWithSuggestions(userID int, transactions []services.Pars
 			RawText:         tx.RawText,
 			IsDuplicate:     false,
 			SuggestedTagIDs: []int{},
+			SuggestedDetail: nil,
 			ExistingTagIDs:  []int{},
 		}
+	}
 
-		// Check if exact transaction exists (same description, amount, date)
-		var existingID int
-		err := database.DB.QueryRow(`
-			SELECT id FROM transactions
-			WHERE user_id = $1
-			AND LOWER(TRIM(description)) = LOWER(TRIM($2))
-			AND ROUND(amount::numeric, 2) = ROUND($3::numeric, 2)
-			AND date = $4::date
-			LIMIT 1
-		`, userID, tx.Description, tx.Amount, tx.Date).Scan(&existingID)
+	// Build a map for quick lookup of existing transactions (for duplicate detection)
+	existingTxMap := loadExistingTransactions(userID, transactions)
 
-		if err == nil {
-			// Transaction exists - it's a duplicate
-			enhanced.IsDuplicate = true
-			enhanced.ExistingTagIDs = getTagsForTransaction(existingID)
-			enhanced.SuggestedTagIDs = enhanced.ExistingTagIDs
+	// Load suggestions based on exact description match (detail + tags)
+	suggestionMap := loadSuggestionsByDescription(userID, transactions)
+
+	// Process each transaction using the preloaded data
+	for i, tx := range transactions {
+		key := buildTxKey(tx.Description, tx.Amount, tx.Date)
+		descKey := strings.ToLower(strings.TrimSpace(tx.Description))
+
+		if existing, ok := existingTxMap[key]; ok {
+			// Exact duplicate (same description, amount, date)
+			result[i].IsDuplicate = true
+			result[i].ExistingTagIDs = existing.TagIDs
+			result[i].SuggestedTagIDs = existing.TagIDs
 		} else {
-			// Try fuzzy match
-			descPrefix := extractDescriptionPrefix(tx.Description)
-			if descPrefix != "" {
-				err = database.DB.QueryRow(`
-					SELECT id FROM transactions
-					WHERE user_id = $1
-					AND ROUND(amount::numeric, 2) = ROUND($2::numeric, 2)
-					AND date = $3::date
-					AND (
-						LOWER(description) LIKE $4
-						OR LOWER(description) LIKE $5
-					)
-					LIMIT 1
-				`, userID, tx.Amount, tx.Date, "%"+descPrefix+"%", descPrefix+"%").Scan(&existingID)
-
-				if err == nil {
-					enhanced.IsDuplicate = true
-					enhanced.ExistingTagIDs = getTagsForTransaction(existingID)
-					enhanced.SuggestedTagIDs = enhanced.ExistingTagIDs
-				}
-			}
-
-			// Check for split transactions
-			if !enhanced.IsDuplicate {
-				var totalAmount float64
-				var firstTxID *int
-				err = database.DB.QueryRow(`
-					SELECT COALESCE(SUM(amount), 0), (SELECT id FROM transactions
-						WHERE user_id = $1 AND LOWER(TRIM(description)) = LOWER(TRIM($2)) AND date = $3::date LIMIT 1)
-					FROM transactions
-					WHERE user_id = $1
-					AND LOWER(TRIM(description)) = LOWER(TRIM($2))
-					AND date = $3::date
-				`, userID, tx.Description, tx.Date).Scan(&totalAmount, &firstTxID)
-
-				if err == nil && totalAmount > 0 {
-					diff := tx.Amount - totalAmount
-					if diff >= -0.01 && diff <= 0.01 {
-						enhanced.IsDuplicate = true
-						if firstTxID != nil {
-							enhanced.ExistingTagIDs = getTagsForTransaction(*firstTxID)
-							enhanced.SuggestedTagIDs = enhanced.ExistingTagIDs
-						}
-					}
-				}
+			// Not a duplicate - look for suggestions based on description
+			if suggestion, ok := suggestionMap[descKey]; ok {
+				result[i].SuggestedTagIDs = suggestion.TagIDs
+				result[i].SuggestedDetail = suggestion.Detail
 			}
 		}
+	}
 
-		// If no tags found, try to suggest some
-		if len(enhanced.SuggestedTagIDs) == 0 {
-			suggestedTags := findTagSuggestions(userID, tx.Description, tx.Type)
-			enhanced.SuggestedTagIDs = suggestedTags
+	return result
+}
+
+// existingTxInfo holds info about an existing transaction
+type existingTxInfo struct {
+	ID     int
+	TagIDs []int
+}
+
+// buildTxKey creates a unique key for transaction matching
+func buildTxKey(desc string, amount float64, date string) string {
+	return strings.ToLower(strings.TrimSpace(desc)) + "|" + strconv.FormatFloat(amount, 'f', 2, 64) + "|" + date
+}
+
+// loadExistingTransactions loads all potentially duplicate transactions in one query
+func loadExistingTransactions(userID int, transactions []services.ParsedTransaction) map[string]existingTxInfo {
+	result := make(map[string]existingTxInfo)
+
+	if len(transactions) == 0 {
+		return result
+	}
+
+	// Get date range from transactions
+	var minDate, maxDate string
+	for _, tx := range transactions {
+		if minDate == "" || tx.Date < minDate {
+			minDate = tx.Date
+		}
+		if maxDate == "" || tx.Date > maxDate {
+			maxDate = tx.Date
+		}
+	}
+
+	// Query all transactions in date range with their tags
+	rows, err := database.DB.Query(`
+		SELECT t.id, LOWER(TRIM(t.description)), ROUND(t.amount::numeric, 2), t.date::text,
+		       COALESCE(array_agg(tt.tag_id) FILTER (WHERE tt.tag_id IS NOT NULL), ARRAY[]::int[])
+		FROM transactions t
+		LEFT JOIN transaction_tags tt ON t.id = tt.transaction_id
+		WHERE t.user_id = $1 AND t.date BETWEEN $2::date AND $3::date
+		GROUP BY t.id, t.description, t.amount, t.date
+	`, userID, minDate, maxDate)
+
+	if err != nil {
+		return result
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id int
+		var desc string
+		var amount float64
+		var date string
+		var tagIDs pq.Int64Array
+
+		if err := rows.Scan(&id, &desc, &amount, &date, &tagIDs); err != nil {
+			continue
 		}
 
-		result = append(result, enhanced)
+		key := desc + "|" + strconv.FormatFloat(amount, 'f', 2, 64) + "|" + date
+		intTagIDs := make([]int, len(tagIDs))
+		for i, tid := range tagIDs {
+			intTagIDs[i] = int(tid)
+		}
+		result[key] = existingTxInfo{ID: id, TagIDs: intTagIDs}
+	}
+
+	return result
+}
+
+// suggestionInfo holds detail and tag suggestions for a description
+type suggestionInfo struct {
+	Detail *string
+	TagIDs []int
+}
+
+// loadSuggestionsByDescription loads suggestions based on exact description match
+// Returns detail and tags from previous transactions with the same description
+func loadSuggestionsByDescription(userID int, transactions []services.ParsedTransaction) map[string]suggestionInfo {
+	result := make(map[string]suggestionInfo)
+
+	if len(transactions) == 0 {
+		return result
+	}
+
+	// Get unique descriptions from incoming transactions
+	descriptions := make([]string, 0)
+	seen := make(map[string]bool)
+	for _, tx := range transactions {
+		descLower := strings.ToLower(strings.TrimSpace(tx.Description))
+		if !seen[descLower] {
+			seen[descLower] = true
+			descriptions = append(descriptions, descLower)
+		}
+	}
+
+	// Query the most recent transaction for each description that has detail or tags
+	// We want to get the detail and tags from existing transactions with same description
+	rows, err := database.DB.Query(`
+		WITH ranked AS (
+			SELECT
+				LOWER(TRIM(t.description)) as desc_key,
+				t.detail,
+				COALESCE(array_agg(tt.tag_id) FILTER (WHERE tt.tag_id IS NOT NULL), ARRAY[]::int[]) as tag_ids,
+				ROW_NUMBER() OVER (PARTITION BY LOWER(TRIM(t.description)) ORDER BY t.created_at DESC) as rn
+			FROM transactions t
+			LEFT JOIN transaction_tags tt ON t.id = tt.transaction_id
+			WHERE t.user_id = $1
+			  AND (t.detail IS NOT NULL AND t.detail != '' OR EXISTS (
+			      SELECT 1 FROM transaction_tags tt2 WHERE tt2.transaction_id = t.id
+			  ))
+			GROUP BY t.id, t.description, t.detail, t.created_at
+		)
+		SELECT desc_key, detail, tag_ids
+		FROM ranked
+		WHERE rn = 1
+	`, userID)
+
+	if err != nil {
+		return result
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var descKey string
+		var detail *string
+		var tagIDs pq.Int64Array
+
+		if err := rows.Scan(&descKey, &detail, &tagIDs); err != nil {
+			continue
+		}
+
+		intTagIDs := make([]int, len(tagIDs))
+		for i, tid := range tagIDs {
+			intTagIDs[i] = int(tid)
+		}
+
+		result[descKey] = suggestionInfo{
+			Detail: detail,
+			TagIDs: intTagIDs,
+		}
 	}
 
 	return result
@@ -375,42 +482,120 @@ func ConfirmImport(c *gin.Context) {
 		return
 	}
 
-	// Insert transactions with tags (skip duplicates if marked)
-	var savedCount int
-	var skippedCount int
+	// Filter out duplicates first
+	var toInsert []struct {
+		Description string
+		Detail      *string
+		Amount      float64
+		Currency    string
+		Type        string
+		Date        string
+		TagIDs      []int
+		RawText     string
+	}
 
+	skippedCount := 0
 	for _, tx := range req.Transactions {
-		// Skip duplicates
 		if tx.IsDuplicate {
 			skippedCount++
 			continue
 		}
-
-		// Default currency to PEN if not specified
 		currency := tx.Currency
 		if currency == "" {
 			currency = "PEN"
 		}
+		toInsert = append(toInsert, struct {
+			Description string
+			Detail      *string
+			Amount      float64
+			Currency    string
+			Type        string
+			Date        string
+			TagIDs      []int
+			RawText     string
+		}{
+			Description: tx.Description,
+			Detail:      tx.Detail,
+			Amount:      tx.Amount,
+			Currency:    currency,
+			Type:        tx.Type,
+			Date:        tx.Date,
+			TagIDs:      tx.TagIDs,
+			RawText:     tx.RawText,
+		})
+	}
 
+	if len(toInsert) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "No transactions to save",
+			"saved":   0,
+			"skipped": skippedCount,
+			"total":   len(req.Transactions),
+		})
+		return
+	}
+
+	// Use a database transaction for atomicity
+	dbTx, err := database.DB.Begin()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error starting transaction"})
+		return
+	}
+	defer dbTx.Rollback()
+
+	// Get valid tag IDs for this user (to avoid per-insert validation)
+	validTagRows, err := database.DB.Query(`SELECT id FROM tags WHERE user_id = $1`, userID)
+	validTags := make(map[int]bool)
+	if err == nil {
+		defer validTagRows.Close()
+		for validTagRows.Next() {
+			var tagID int
+			if err := validTagRows.Scan(&tagID); err == nil {
+				validTags[tagID] = true
+			}
+		}
+	}
+
+	// Insert all transactions and collect their IDs
+	savedCount := 0
+	type txWithTags struct {
+		ID     int
+		TagIDs []int
+	}
+	var insertedTxs []txWithTags
+
+	for _, tx := range toInsert {
 		var txID int
-		err := database.DB.QueryRow(
+		err := dbTx.QueryRow(
 			`INSERT INTO transactions (user_id, account_id, description, detail, amount, currency, type, date, source, raw_text)
 			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'import', $9)
 			 RETURNING id`,
-			userID, req.AccountID, tx.Description, tx.Detail, tx.Amount, currency, tx.Type, tx.Date, tx.RawText,
+			userID, req.AccountID, tx.Description, tx.Detail, tx.Amount, tx.Currency, tx.Type, tx.Date, tx.RawText,
 		).Scan(&txID)
 
 		if err == nil {
 			savedCount++
-			// Insert tags for this transaction
-			for _, tagID := range tx.TagIDs {
-				database.DB.Exec(`
-					INSERT INTO transaction_tags (transaction_id, tag_id)
-					SELECT $1, $2
-					WHERE EXISTS (SELECT 1 FROM tags WHERE id = $2 AND user_id = $3)
-				`, txID, tagID, userID)
+			if len(tx.TagIDs) > 0 {
+				insertedTxs = append(insertedTxs, txWithTags{ID: txID, TagIDs: tx.TagIDs})
 			}
 		}
+	}
+
+	// Batch insert all transaction_tags
+	if len(insertedTxs) > 0 {
+		for _, itx := range insertedTxs {
+			for _, tagID := range itx.TagIDs {
+				if validTags[tagID] {
+					dbTx.Exec(`INSERT INTO transaction_tags (transaction_id, tag_id) VALUES ($1, $2)`,
+						itx.ID, tagID)
+				}
+			}
+		}
+	}
+
+	if err := dbTx.Commit(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error saving transactions"})
+		return
 	}
 
 	// Update import record

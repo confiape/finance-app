@@ -48,6 +48,7 @@ func main() {
 	// Public routes
 	r.POST("/api/auth/register", handlers.Register)
 	r.POST("/api/auth/login", handlers.Login)
+	r.POST("/api/auth/google", handlers.GoogleLogin)
 
 	// Protected routes
 	api := r.Group("/api")
@@ -79,6 +80,8 @@ func main() {
 		api.DELETE("/transactions", handlers.DeleteTransactionsBatch)
 		api.GET("/transactions/:id/tags", handlers.GetTagsForTransaction)
 		api.PUT("/transactions/:id/tags", handlers.SetTransactionTags)
+		api.POST("/transactions/link", handlers.LinkTransactions)
+		api.DELETE("/transactions/:id/link", handlers.UnlinkTransaction)
 
 		// Dashboard
 		api.GET("/dashboard", handlers.GetDashboard)

@@ -33,10 +33,12 @@ type Transaction struct {
 	Date        string    `json:"date"`
 	Source      string    `json:"source"` // manual, excel, image
 	RawText     *string   `json:"raw_text,omitempty"`
+	LinkedTo    *int      `json:"linked_to,omitempty"` // ID of linked transaction (for reimbursements)
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 	Tags        []Tag     `json:"tags"`
 	Account     *Account  `json:"account,omitempty"`
+	LinkedTx    *Transaction `json:"linked_transaction,omitempty"` // The linked transaction details
 }
 
 type Account struct {

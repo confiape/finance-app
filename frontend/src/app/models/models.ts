@@ -31,6 +31,8 @@ export interface Transaction {
   date: string;
   source: string;
   raw_text?: string;
+  linked_to?: number; // ID of linked transaction (for reimbursements)
+  linked_transaction?: Transaction; // The linked transaction details
   created_at: string;
   updated_at: string;
   tags: Tag[];
@@ -67,6 +69,7 @@ export interface ParsedTransaction {
   raw_text: string;
   tag_ids?: number[];
   suggested_tag_ids?: number[];
+  suggested_detail?: string;
   is_duplicate?: boolean;
   existing_tag_ids?: number[];
 }

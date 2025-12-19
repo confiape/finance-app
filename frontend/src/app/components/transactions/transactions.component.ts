@@ -18,6 +18,7 @@ import { ApiService } from '../../services/api.service';
 import { Transaction, Tag } from '../../models/models';
 import { TransactionDialogComponent } from './transaction-dialog.component';
 import { TransactionDetailDialogComponent } from './transaction-detail-dialog.component';
+import { LinkTransactionDialogComponent } from './link-transaction-dialog.component';
 
 interface DateFilter {
   label: string;
@@ -192,11 +193,17 @@ interface DateFilter {
                 </div>
                 <div class="tx-meta">
                   <span class="tx-tags">
+                    @if (tx.linked_to) {
+                      <span class="linked-badge" title="Vinculada a otra transacción">
+                        <mat-icon>link</mat-icon>
+                        Vinculada
+                      </span>
+                    }
                     @if (tx.tags?.length) {
                       @for (tag of tx.tags; track tag.id) {
                         <span class="tag-badge" [style.background-color]="tag.color">{{ tag.name }}</span>
                       }
-                    } @else {
+                    } @else if (!tx.linked_to) {
                       <span class="no-tags">Sin tags</span>
                     }
                   </span>
@@ -211,6 +218,17 @@ interface DateFilter {
                   <mat-icon>edit</mat-icon>
                   Editar
                 </button>
+                @if (tx.linked_to) {
+                  <button mat-menu-item (click)="unlinkTransaction(tx)">
+                    <mat-icon>link_off</mat-icon>
+                    Desvincular
+                  </button>
+                } @else {
+                  <button mat-menu-item (click)="openLinkDialog(tx)">
+                    <mat-icon>link</mat-icon>
+                    Vincular
+                  </button>
+                }
                 <button mat-menu-item (click)="deleteTransaction(tx)">
                   <mat-icon>delete</mat-icon>
                   Eliminar
@@ -463,6 +481,24 @@ interface DateFilter {
     .no-tags {
       color: #94a3b8;
       font-style: italic;
+    }
+
+    .linked-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 0.7rem;
+      background: #dbeafe;
+      color: #1d4ed8;
+      font-weight: 500;
+
+      mat-icon {
+        font-size: 12px;
+        width: 12px;
+        height: 12px;
+      }
     }
 
     .tx-checkbox {
@@ -724,5 +760,27 @@ export class TransactionsComponent implements OnInit {
       return `${day} ${months[monthIndex]} ${year}`;
     }
     return dateStr;
+  }
+
+  // Linking methods
+  openLinkDialog(transaction: Transaction) {
+    const dialogRef = this.dialog.open(LinkTransactionDialogComponent, {
+      width: '450px',
+      data: transaction
+    });
+
+    dialogRef.afterClosed().subscribe(result => {
+      if (result) {
+        this.loadTransactions();
+      }
+    });
+  }
+
+  unlinkTransaction(tx: Transaction) {
+    if (confirm('¿Desvincular esta transacción?')) {
+      this.apiService.unlinkTransaction(tx.id).subscribe({
+        next: () => this.loadTransactions()
+      });
+    }
   }
 }

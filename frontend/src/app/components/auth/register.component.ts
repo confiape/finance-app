@@ -1,4 +1,4 @@
-import { Component, inject, signal } from '@angular/core';
+import { Component, inject, signal, AfterViewInit, NgZone } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterLink, Router } from '@angular/router';
 import { FormsModule } from '@angular/forms';
@@ -9,6 +9,9 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { AuthService } from '../../services/auth.service';
+import { environment } from '../../../environments/environment';
+
+declare const google: any;
 
 @Component({
   selector: 'app-register',
@@ -71,6 +74,12 @@ import { AuthService } from '../../services/auth.service';
               }
             </button>
           </form>
+
+          <div class="divider">
+            <span>o</span>
+          </div>
+
+          <div id="google-signup-button" class="google-btn-container"></div>
         </mat-card-content>
 
         <mat-card-actions align="end">
@@ -133,11 +142,36 @@ import { AuthService } from '../../services/auth.service';
       margin-bottom: 16px;
       font-size: 0.875rem;
     }
+
+    .divider {
+      display: flex;
+      align-items: center;
+      margin: 20px 0;
+
+      &::before, &::after {
+        content: '';
+        flex: 1;
+        height: 1px;
+        background: #e2e8f0;
+      }
+
+      span {
+        padding: 0 16px;
+        color: #64748b;
+        font-size: 0.875rem;
+      }
+    }
+
+    .google-btn-container {
+      display: flex;
+      justify-content: center;
+    }
   `]
 })
-export class RegisterComponent {
+export class RegisterComponent implements AfterViewInit {
   private authService = inject(AuthService);
   private router = inject(Router);
+  private ngZone = inject(NgZone);
 
   name = '';
   email = '';
@@ -145,6 +179,47 @@ export class RegisterComponent {
   loading = signal(false);
   error = signal('');
   hidePassword = signal(true);
+
+  ngAfterViewInit() {
+    this.initializeGoogleSignIn();
+  }
+
+  private initializeGoogleSignIn() {
+    if (typeof google !== 'undefined' && google.accounts) {
+      google.accounts.id.initialize({
+        client_id: environment.googleClientId,
+        callback: (response: any) => this.handleGoogleCallback(response)
+      });
+
+      google.accounts.id.renderButton(
+        document.getElementById('google-signup-button'),
+        {
+          theme: 'outline',
+          size: 'large',
+          width: '100%',
+          text: 'signup_with',
+          locale: 'es'
+        }
+      );
+    }
+  }
+
+  private handleGoogleCallback(response: any) {
+    this.ngZone.run(() => {
+      this.loading.set(true);
+      this.error.set('');
+
+      this.authService.googleLogin(response.credential).subscribe({
+        next: () => {
+          this.router.navigate(['/dashboard']);
+        },
+        error: (err) => {
+          this.loading.set(false);
+          this.error.set(err.error?.error || 'Error al registrarse con Google');
+        }
+      });
+    });
+  }
 
   onSubmit() {
     if (!this.name || !this.email || !this.password) {

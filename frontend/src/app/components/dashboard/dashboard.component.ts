@@ -106,6 +106,17 @@ interface DateFilter {
                 <mat-option value="date_asc">Más antiguo</mat-option>
               </mat-select>
             </mat-form-field>
+
+            <button
+              mat-stroked-button
+              class="linked-toggle"
+              [class.active]="includeLinked"
+              (click)="toggleIncludeLinked()"
+              title="Ver transacciones vinculadas (reembolsos)"
+            >
+              <mat-icon>{{ includeLinked ? 'link' : 'link_off' }}</mat-icon>
+              {{ includeLinked ? 'Mostrando todo' : 'Ocultando reembolsos' }}
+            </button>
           </div>
         </div>
 
@@ -360,6 +371,30 @@ interface DateFilter {
 
     .filter-field {
       min-width: 130px;
+    }
+
+    .linked-toggle {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+      font-size: 0.85rem;
+      padding: 0 12px;
+      height: 56px;
+      border-color: #e2e8f0;
+      color: #64748b;
+
+      mat-icon {
+        font-size: 18px;
+        width: 18px;
+        height: 18px;
+      }
+
+      &.active {
+        background: #6366f1;
+        color: white;
+        border-color: #6366f1;
+      }
     }
 
     .active-filters {
@@ -772,6 +807,7 @@ export class DashboardComponent implements OnInit {
   selectedTagIds = signal<number[]>([]);
   selectedAccountType: string | null = null;
   selectedSort: SortOption = 'date_desc';
+  includeLinked = false; // Default: hide linked transactions (show net amounts)
 
   // Custom date range
   customStartDate: Date | null = null;
@@ -926,7 +962,7 @@ export class DashboardComponent implements OnInit {
     });
 
     // Load dashboard summary and transactions in parallel
-    this.apiService.getDashboard(startDate, endDate, this.selectedAccountType || undefined).subscribe({
+    this.apiService.getDashboard(startDate, endDate, this.selectedAccountType || undefined, this.includeLinked).subscribe({
       next: (data) => {
         this.data.set(data);
         const currentType = this.selectedType() || 'expense';
@@ -1041,6 +1077,11 @@ export class DashboardComponent implements OnInit {
   onSortChange() {
     // Force recompute of filteredTransactions by triggering a signal update
     this.allTransactions.set([...this.allTransactions()]);
+  }
+
+  toggleIncludeLinked() {
+    this.includeLinked = !this.includeLinked;
+    this.loadDashboard();
   }
 
   formatDate(date: Date): string {
